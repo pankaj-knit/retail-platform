@@ -1,0 +1,52 @@
+# =============================================================================
+# Resource Governance for retail-app namespace
+# =============================================================================
+# Two complementary controls:
+#
+#   ResourceQuota  — caps the TOTAL resources the namespace can consume.
+#                    Prevents runaway scaling from exhausting cluster capacity.
+#
+#   LimitRange     — caps PER-CONTAINER resources and sets defaults.
+#                    Prevents any single service from hogging the namespace budget.
+#
+# Together they ensure:
+#   1. The namespace can't starve other namespaces (retail-data, retail-observe)
+#   2. No single microservice can starve other services within the namespace
+#   3. Pods without explicit resource specs get safe defaults
+#
+# Budget math (kind cluster with ~8GB usable):
+#   retail-app gets up to 8Gi memory, 4 CPU cores
+#   5 services × 2 min pods × 768Mi limit = 7.5Gi at minimum scale
+#   With HPA scaling, some pods may go Pending — that's by design (backpressure)
+# =============================================================================
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: retail-app-quota
+  namespace: retail-app
+spec:
+  hard:
+    requests.memory: "6Gi"
+    limits.memory: "12Gi"
+    requests.cpu: "4"
+    pods: "30"
+
+---
+# Per-container guardrails — no single container can exceed 1Gi memory.
+# Pods without resource specs get safe defaults (256Mi request, 512Mi limit).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: retail-app-limits
+  namespace: retail-app
+spec:
+  limits:
+    - type: Container
+      max:
+        memory: "1Gi"
+      default:
+        memory: "512Mi"
+      defaultRequest:
+        memory: "256Mi"
+        cpu: "100m"

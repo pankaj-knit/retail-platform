@@ -1,0 +1,123 @@
+# =============================================================================
+# User Service - Application Configuration
+# =============================================================================
+# Spring Boot reads this file on startup to configure all components.
+# Values can be overridden by environment variables (useful in K8s).
+# Convention: SPRING_DATASOURCE_URL env var overrides spring.datasource.url
+# =============================================================================
+
+spring:
+  application:
+    name: user-service
+
+  # --- Database Configuration ---
+  datasource:
+    # JDBC URL to connect to Postgres.
+    # In K8s, "postgres.retail-data" resolves via K8s DNS to our Postgres Service.
+    # The env var override allows K8s to inject the correct URL at runtime.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/user_db}
+    username: ${SPRING_DATASOURCE_USERNAME:retail_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:CHANGE_ME_SET_ENV_VAR}
+    driver-class-name: org.postgresql.Driver
+
+    # HikariCP connection pool settings.
+    # Hikari is the default pool in Spring Boot -- fast and lightweight.
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL:10}
+      minimum-idle: ${HIKARI_MIN_IDLE:5}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      leak-detection-threshold: 60000
+      pool-name: user-pool
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+  # --- JPA / Hibernate ---
+  jpa:
+    hibernate:
+      # "validate" means Hibernate checks that entities match the DB schema
+      # but does NOT modify the schema. Flyway handles schema changes.
+      # Other options: create, create-drop, update (never use these in production)
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        "[jdbc.batch_size]": 25
+        "[order_inserts]": true
+        "[order_updates]": true
+        "[query.plan_cache_max_size]": 2048
+        "[query.in_clause_parameter_padding]": true
+
+  flyway:
+    enabled: true
+    # Flyway looks for SQL files in this directory, named V1__description.sql,
+    # V2__description.sql, etc. It runs them in order, tracks which have been
+    # applied, and only runs new ones.
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${DRAGONFLY_HOST:localhost}
+      port: ${DRAGONFLY_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: 8080
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/plain
+    min-response-size: 1024
+
+# --- Actuator (Health + Metrics endpoints) ---
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    tags:
+      # Tag all metrics with the application name.
+      # In Grafana, you can filter dashboards by this tag.
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector.retail-observe.svc.cluster.local:4318}/v1/traces
+
+# --- Vault Secrets Path ---
+# In K8s, the Vault Agent init container writes secrets as files to this path.
+# Locally, you can set this to a directory containing the key files.
+vault:
+  secrets-path: ${VAULT_SECRETS_PATH:config/jwt}
+
+# --- JWT Configuration (RSA / RS256) ---
+# User Service uses the PRIVATE key to SIGN tokens.
+# All services use the PUBLIC key to VERIFY tokens.
+# Keys are read from files written by the Vault Agent init container.
+jwt:
+  private-key-path: ${vault.secrets-path}/jwt-private-key.pem
+  public-key-path: ${vault.secrets-path}/jwt-public-key.pem
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+# --- Logging ---
+logging:
+  level:
+    root: INFO
+    "[com.retail.userservice]": ${LOG_LEVEL_APP:INFO}
+    "[org.springframework.security]": INFO

@@ -1,0 +1,35 @@
+# ─── Secrets (NEVER commit) ───
+config/jwt/*.pem
+config/vault/
+
+# ─── Java / Gradle ───
+**/build/
+**/.gradle/
+*.class
+*.jar
+
+# ─── Node.js / Next.js ───
+**/node_modules/
+frontend/.next/
+frontend/out/
+
+# ─── Docker ───
+**/docker-compose.override.yml
+
+# ─── IDE ───
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+
+# ─── Logs ───
+*.log
+**/logs/
+
+# ─── Text Files ───
+*.txt

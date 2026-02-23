@@ -1,0 +1,291 @@
+# =============================================================================
+# Postgres on Kubernetes - Complete Setup
+# =============================================================================
+# This file contains 2 Kubernetes resources:
+#
+# 1. StatefulSet     - Runs the Postgres container with persistent storage
+# 2. Service         - Makes Postgres discoverable by other pods via DNS
+#
+# The ConfigMap (postgres-init-scripts) is NOT defined here.
+# It is created at deploy time from the standalone init-databases.sql file
+# using: kubectl create configmap --from-file=init-databases.sql
+# This avoids duplicating the SQL in two places.
+#
+# After applying this, any pod in the cluster can connect to Postgres at:
+#   postgres.retail-data.svc.cluster.local:5432
+# Or simply (from within the same namespace):
+#   postgres:5432
+# ┌─────────────────────────────────────────────────────────────┐
+# │                                                             │
+# │  PersistentVolume (PV)         = The actual hard drive      │
+# │  "A piece of storage that exists in the cluster"            │
+# │                                                             │
+# │  PersistentVolumeClaim (PVC)   = A rental agreement         │
+# │  "I need 1GB of storage, please reserve it for me"          │
+# │                                                             │
+# │  Volume Mount                  = Plugging it in             │
+# │  "Mount that reserved storage at /var/lib/postgresql/data"  │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+# Concept	Analogy
+# PersistentVolume (PV)	A storage locker in a warehouse
+# PersistentVolumeClaim (PVC)	Your rental contract: "I need a locker that's at least 1GB"
+# Pod using the PVC	You putting your stuff in the locker
+# Pod dies and restarts	You leave and come back -- your stuff is still in the locker
+# Deleting the PVC	Terminating the rental -- locker gets emptied
+
+# The Lifecycle
+# 1. StatefulSet creates pod "postgres-0"
+#    │
+#    ▼
+# 2. K8s sees the volumeClaimTemplate, creates PVC "postgres-data-postgres-0"
+#    │
+#    ▼
+# 3. K8s finds (or auto-creates) a PersistentVolume that satisfies the claim
+#    (In kind, this is just a directory on the kind node's filesystem)
+#    │
+#    ▼
+# 4. PV is bound to the PVC. Pod mounts it at /var/lib/postgresql/data
+#    │
+#    ▼
+# 5. Postgres writes all its data there (tables, indexes, WAL logs)
+#    │
+#    ▼
+# 6. Pod crashes or gets restarted
+#    │
+#    ▼
+# 7. New pod starts, same PVC is re-mounted -> all data is still there ✓
+
+# Where does the storage physically live?
+# Environment	PV is backed by
+# kind (our setup)	A directory on the kind Docker container's filesystem
+# AWS EKS	An EBS volume (network-attached SSD)
+# Google GKE	A Persistent Disk
+# Azure AKS	An Azure Disk
+# In all cases, your application code is identical -- it just writes to /var/lib/postgresql/data. K8s abstracts away where the storage actually lives. That's the power of the PV/PVC system.
+# =============================================================================
+
+
+# =============================================================================
+# RESOURCE 1: StatefulSet
+# =============================================================================
+# Why StatefulSet instead of Deployment?
+#
+# Deployment:
+#   - For stateless apps (web servers, APIs)
+#   - Pods are interchangeable, can be killed/recreated freely
+#   - No stable storage
+#
+# StatefulSet:
+#   - For stateful apps (databases, Kafka, Zookeeper)
+#   - Each pod gets a stable hostname (postgres-0, postgres-1, etc.)
+#   - Each pod gets its own persistent volume that survives restarts
+#   - Pods are created/deleted in order (important for DB replication)
+#
+# We use StatefulSet because Postgres stores data on disk -- if the pod
+# restarts, we need the data to still be there.
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: retail-data
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres          # Links to the Service below
+  replicas: 1                    # Single instance (not HA for local dev)
+  selector:
+    matchLabels:
+      app: postgres              # How K8s finds pods belonging to this StatefulSet
+  template:
+    # --- Pod Template ---
+    # This is the blueprint for the actual container(s) that will run.
+    metadata:
+      labels:
+        app: postgres            # Must match selector above
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          # Why alpine? ~80MB vs ~400MB for full image. Same Postgres, smaller footprint.
+
+          ports:
+            - containerPort: 5432
+              name: postgresql
+
+          # --- Environment Variables from Secret ---
+          # Instead of hardcoding credentials, we pull them from the Secret.
+          # K8s injects these as env vars when the container starts.
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+
+          # --- Volume Mounts ---
+          # Mount points inside the container's filesystem.
+          volumeMounts:
+            # Where Postgres stores its data files (tables, indexes, WAL, etc.)
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+              # Why subPath? The postgres image requires the data directory to be
+              # empty on first init. If we mount directly to /var/lib/postgresql/data,
+              # the PVC's "lost+found" directory confuses Postgres. subPath avoids this.
+
+            # Mount our init SQL script into the magic directory
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              # Postgres automatically executes any .sql files found here on FIRST boot.
+              # On subsequent restarts, it skips this (data directory already exists).
+
+          # --- Resource Limits ---
+          # Tells K8s how much CPU/memory this container needs.
+          # "requests" = guaranteed minimum (K8s reserves this)
+          # "limits"   = hard ceiling (container gets killed if it exceeds memory limit)
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"        # 250 millicores = 0.25 CPU cores
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          # --- Health Checks ---
+          # K8s uses these to know if Postgres is actually ready to accept connections.
+
+          # Readiness Probe: "Is this pod ready to receive traffic?"
+          # Until this passes, K8s won't send any traffic to this pod.
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - retail_user
+                - -d
+                - postgres
+            initialDelaySeconds: 5   # Wait 5s after container starts before first check
+            periodSeconds: 10        # Check every 10s
+
+          # Liveness Probe: "Is this pod still alive?"
+          # If this fails repeatedly, K8s kills and restarts the pod.
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - retail_user
+                - -d
+                - postgres
+            initialDelaySeconds: 15  # Give Postgres time to fully start
+            periodSeconds: 20
+
+        # =================================================================
+        # postgres-exporter sidecar
+        # =================================================================
+        # Exposes PostgreSQL internal statistics (pg_stat_database,
+        # pg_stat_user_tables, pg_stat_bgwriter, etc.) as Prometheus
+        # metrics on port 9187. Prometheus scrapes this endpoint to
+        # power the "PostgreSQL Server" Grafana dashboard.
+        - name: postgres-exporter
+          image: prometheuscommunity/postgres-exporter:v0.15.0
+          ports:
+            - containerPort: 9187
+              name: pg-metrics
+          env:
+            - name: DATA_SOURCE_URI
+              value: "localhost:5432/postgres?sslmode=disable"
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9187
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9187
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+      # --- Volumes ---
+      # Define where the mounted data comes from.
+      volumes:
+        # The init scripts come from our ConfigMap
+        - name: init-scripts
+          configMap:
+            name: postgres-init-scripts
+
+  # --- Persistent Volume Claim Template ---
+  # This tells K8s: "For each pod in this StatefulSet, create a persistent
+  # volume with these specs." The volume survives pod restarts and even
+  # pod deletion (you have to manually delete the PVC to lose data).
+  #
+  # In kind, this uses the default "standard" storage class which maps
+  # to a directory on the kind node's filesystem.
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]   # Only one pod can mount this at a time
+        resources:
+          requests:
+            storage: 1Gi                 # 1 GB of disk space (plenty for local dev)
+
+---
+
+# =============================================================================
+# RESOURCE 3: Service
+# =============================================================================
+# A Service gives pods a stable DNS name and load-balances traffic to them.
+#
+# Without a Service, you'd have to find the pod's IP address (which changes
+# every time the pod restarts). With a Service, other pods just connect to:
+#   postgres.retail-data.svc.cluster.local:5432
+#
+# K8s DNS automatically resolves this to the pod's current IP.
+#
+# Why "ClusterIP" type?
+#   - ClusterIP: Only accessible from WITHIN the cluster (default, most secure)
+#   - NodePort:  Accessible from outside via node IP + port
+#   - LoadBalancer: Gets an external IP (for cloud providers)
+#
+# Postgres should only be reachable by our microservices inside the cluster,
+# so ClusterIP is the right choice.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: retail-data
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432               # The port other pods connect to
+      targetPort: postgresql    # Maps to the container's named port (5432)
+      protocol: TCP
+      name: tcp-postgres
+    - port: 9187               # postgres-exporter metrics endpoint
+      targetPort: pg-metrics
+      protocol: TCP
+      name: pg-metrics
+  selector:
+    app: postgres              # Routes traffic to pods with this label

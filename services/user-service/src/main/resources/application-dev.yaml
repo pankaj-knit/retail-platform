@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    password: retail_pass_2026
+
+logging:
+  level:
+    com.retail.userservice: DEBUG
+    org.springframework.security: DEBUG
+
+management:
+  endpoint:
+    health:
+      show-details: always

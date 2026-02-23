@@ -1,0 +1,91 @@
+# =============================================================================
+# Dragonfly - In-Memory Cache (Redis-Compatible)
+# =============================================================================
+# Dragonfly is a modern Redis-compatible in-memory datastore used as the L2
+# distributed cache layer. All four microservices connect to it via the
+# standard Redis protocol (port 6379).
+#
+# Architecture:
+#   L1 (Caffeine, in-process, 5s TTL) → L2 (Dragonfly, shared, 5-10min TTL) → PostgreSQL
+#
+# Dragonfly exposes Prometheus metrics at /metrics on port 6379.
+#
+# Access from services:
+#   dragonfly.retail-data.svc.cluster.local:6379
+# =============================================================================
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dragonfly
+  namespace: retail-data
+  labels:
+    app: dragonfly
+spec:
+  serviceName: dragonfly
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dragonfly
+  template:
+    metadata:
+      labels:
+        app: dragonfly
+    spec:
+      containers:
+        - name: dragonfly
+          image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+          args:
+            - "--maxmemory"
+            - "256mb"
+            - "--proactor_threads"
+            - "2"
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: dragonfly-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: dragonfly-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dragonfly
+  namespace: retail-data
+  labels:
+    app: dragonfly
+spec:
+  type: ClusterIP
+  selector:
+    app: dragonfly
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis

@@ -1,0 +1,146 @@
+# =============================================================================
+# Istio Gateway + VirtualServices
+# =============================================================================
+#
+# Gateway:
+#   Configures the Istio Ingress Gateway (the cluster's front door).
+#   All external traffic enters through here. Think of it as a load balancer
+#   that sits at the edge of your mesh.
+#
+# VirtualService:
+#   Defines routing rules -- which requests go to which service.
+#   Like nginx location blocks, but mesh-aware (supports retries, timeouts,
+#   traffic splitting, fault injection, etc.).
+#
+# Traffic flow:
+#   Browser → localhost:80 → kind node → Istio Ingress Gateway (port 30080)
+#           → Gateway resource → VirtualService → Envoy sidecar → App container
+#
+# =============================================================================
+
+---
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: retail-gateway
+  namespace: retail-app
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
+
+---
+# Frontend: all traffic that doesn't match /api/* goes to the Next.js app
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: frontend-vs
+  namespace: retail-app
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - retail-gateway
+  http:
+    # Route /api/auth/* to user-service
+    - match:
+        - uri:
+            prefix: /api/auth
+      route:
+        - destination:
+            host: user-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 5s
+        retryOn: 5xx,reset,connect-failure
+
+    # Route /api/users/* to user-service
+    - match:
+        - uri:
+            prefix: /api/users
+      route:
+        - destination:
+            host: user-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 5s
+        retryOn: 5xx,reset,connect-failure
+
+    # Route /api/products/* and /api/inventory/* to inventory-service
+    - match:
+        - uri:
+            prefix: /api/products
+      route:
+        - destination:
+            host: inventory-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 5s
+        retryOn: 5xx,reset,connect-failure
+
+    - match:
+        - uri:
+            prefix: /api/inventory
+      route:
+        - destination:
+            host: inventory-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 5s
+        retryOn: 5xx,reset,connect-failure
+
+    # Route /api/orders/* to order-service
+    - match:
+        - uri:
+            prefix: /api/orders
+      route:
+        - destination:
+            host: order-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 30s
+      retries:
+        attempts: 1
+        perTryTimeout: 15s
+        retryOn: 5xx,reset,connect-failure
+
+    # Route /api/payments/* to payment-service
+    - match:
+        - uri:
+            prefix: /api/payments
+      route:
+        - destination:
+            host: payment-service.retail-app.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 5s
+        retryOn: 5xx,reset,connect-failure
+
+    # Default: everything else goes to the frontend (Next.js BFF)
+    - route:
+        - destination:
+            host: frontend.retail-app.svc.cluster.local
+            port:
+              number: 3000
+      timeout: 15s

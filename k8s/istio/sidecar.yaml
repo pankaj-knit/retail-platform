@@ -1,0 +1,29 @@
+# =============================================================================
+# Istio Sidecar Configuration
+# =============================================================================
+#
+# By default, every Envoy sidecar receives the configuration for ALL services
+# in the mesh. In a large cluster, this wastes memory and CPU.
+#
+# The Sidecar resource limits what each service's Envoy knows about:
+#   - Order Service only needs to know about: inventory-service (gRPC),
+#     Kafka (egress), and istio-system (for telemetry)
+#   - Payment Service only needs: Kafka and istio-system
+#   - etc.
+#
+# This is a production optimization. For our local setup, we apply a
+# namespace-wide Sidecar that limits egress to known destinations.
+# =============================================================================
+
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  name: retail-app-sidecar
+  namespace: retail-app
+spec:
+  egress:
+    - hosts:
+        - "./*"
+        - "istio-system/*"
+        - "retail-data/*"
+        - "retail-observe/*"

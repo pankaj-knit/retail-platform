@@ -1,0 +1,283 @@
+# =============================================================================
+# Prometheus - Metrics Collection
+# =============================================================================
+#
+# Prometheus is a pull-based monitoring system:
+#   - It SCRAPES (pulls) metrics from targets at regular intervals
+#   - Stores them in a time-series database
+#   - Provides PromQL for querying
+#   - Grafana connects to it for dashboards
+#
+# How it discovers our services:
+#   Prometheus uses K8s service discovery to find pods with the annotation
+#   `prometheus.io/scrape: "true"`. It then scrapes the path specified in
+#   `prometheus.io/path` (default: /metrics) on the port in `prometheus.io/port`.
+#
+#   Our Spring Boot services expose metrics at /actuator/prometheus
+#   via Micrometer's Prometheus registry.
+#
+# What metrics are available:
+#   - JVM: heap, GC, threads, classloading
+#   - HTTP: request count, latency histograms, error rates
+#   - HikariCP: active connections, pending, timeouts
+#   - Kafka: consumer lag, producer send rate
+#   - Resilience4j: circuit breaker state, call counts
+#   - Custom: any @Timed or @Counted annotations
+# =============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: retail-observe
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # Prometheus self-monitoring (provides up{job="prometheus"} for alerting)
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Scrape Spring Boot services via Istio's merged Prometheus endpoint.
+      # Istio sidecar (port 15020) merges app metrics (/actuator/prometheus)
+      # with Envoy proxy metrics into a single /stats/prometheus endpoint.
+      # This avoids mTLS issues since 15020 serves plaintext.
+      - job_name: 'spring-boot-services'
+        metrics_path: /stats/prometheus
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - retail-app
+        relabel_configs:
+          # Only keep pods whose "app" label matches our services
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: (user-service|order-service|payment-service|inventory-service)
+          # Only keep the main container (skip istio-init, istio-proxy)
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: keep
+            regex: (user-service|order-service|payment-service|inventory-service)
+          # Scrape Istio's merged metrics port
+          - source_labels: [__meta_kubernetes_pod_ip]
+            action: replace
+            regex: (.+)
+            replacement: $1:15020
+            target_label: __address__
+          # Add pod name, namespace, app labels
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: replace
+            target_label: app
+
+      # Scrape OTel Collector's Prometheus exporter
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['otel-collector.retail-observe.svc.cluster.local:8889']
+
+      # Scrape Istio control plane
+      - job_name: 'istiod'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - istio-system
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: istiod
+          - source_labels: [__meta_kubernetes_pod_ip]
+            action: replace
+            regex: (.+)
+            replacement: $1:15014
+            target_label: __address__
+
+      # Scrape postgres-exporter (sidecar on postgres-0 in retail-data)
+      - job_name: 'postgres-exporter'
+        static_configs:
+          - targets: ['postgres.retail-data.svc.cluster.local:9187']
+            labels:
+              app: postgres
+
+      # Scrape Dragonfly (Redis-compatible cache) metrics
+      - job_name: 'dragonfly'
+        static_configs:
+          - targets: ['dragonfly.retail-data.svc.cluster.local:6379']
+            labels:
+              app: dragonfly
+        metrics_path: /metrics
+
+      # Scrape kube-state-metrics (K8s object state: pods, nodes, deployments)
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics.retail-observe.svc.cluster.local:8080']
+
+      # Scrape node-exporter (host-level CPU, memory, disk, network)
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - retail-observe
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: node
+
+      # Scrape Envoy sidecar metrics
+      - job_name: 'envoy-stats'
+        metrics_path: /stats/prometheus
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - retail-app
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: keep
+            regex: istio-proxy
+          - source_labels: [__meta_kubernetes_pod_ip]
+            action: replace
+            regex: (.+)
+            replacement: $1:15090
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: replace
+            target_label: app
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: retail-observe
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: retail-observe
+roleRef:
+  kind: ClusterRole
+  name: prometheus
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: retail-observe
+  labels:
+    app: prometheus
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.51.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=7d"
+            - "--web.enable-lifecycle"
+          ports:
+            - containerPort: 9090
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: prometheus-data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+  volumeClaimTemplates:
+    - metadata:
+        name: prometheus-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: retail-observe
+  labels:
+    app: prometheus
+spec:
+  type: NodePort
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+      nodePort: 30090
+      name: http

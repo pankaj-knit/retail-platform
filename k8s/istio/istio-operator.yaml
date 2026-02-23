@@ -1,0 +1,119 @@
+# =============================================================================
+# Istio Operator Configuration (IstioOperator)
+# =============================================================================
+#
+# What is Istio?
+#   Istio is a service mesh -- a dedicated infrastructure layer that handles
+#   service-to-service communication. Instead of each microservice implementing
+#   its own TLS, retries, circuit breaking, and observability, Istio handles
+#   all of that transparently via Envoy sidecar proxies injected into every pod.
+#
+# Architecture:
+#   ┌─────────────────────────────────────────────────┐
+#   │                  Control Plane                   │
+#   │  ┌──────────┐                                   │
+#   │  │  istiod   │  (Pilot + Citadel + Galley)      │
+#   │  │          │  - Config distribution             │
+#   │  │          │  - Certificate management (mTLS)   │
+#   │  │          │  - Service discovery               │
+#   │  └──────────┘                                   │
+#   └─────────────────────────────────────────────────┘
+#                         │ xDS API
+#   ┌─────────────────────┼──────────────────────────┐
+#   │                Data Plane                       │
+#   │  ┌────────────┐  ┌────────────┐  ┌──────────┐ │
+#   │  │ Pod        │  │ Pod        │  │ Pod      │ │
+#   │  │ ┌────────┐ │  │ ┌────────┐ │  │ ┌──────┐│ │
+#   │  │ │ App    │ │  │ │ App    │ │  │ │ App  ││ │
+#   │  │ └────────┘ │  │ └────────┘ │  │ └──────┘│ │
+#   │  │ ┌────────┐ │  │ ┌────────┐ │  │ ┌──────┐│ │
+#   │  │ │ Envoy  │ │  │ │ Envoy  │ │  │ │Envoy ││ │
+#   │  │ │sidecar │ │  │ │sidecar │ │  │ │sidecr││ │
+#   │  │ └────────┘ │  │ └────────┘ │  │ └──────┘│ │
+#   │  └────────────┘  └────────────┘  └──────────┘ │
+#   └────────────────────────────────────────────────┘
+#
+# How sidecar injection works:
+#   The namespace label `istio-injection: enabled` (set in namespaces.yaml)
+#   tells Istio's mutating webhook to automatically inject an Envoy sidecar
+#   container into every pod created in that namespace.
+#
+# What the Envoy sidecar does:
+#   - Intercepts ALL inbound and outbound traffic for the pod
+#   - Applies mTLS encryption between services (zero-trust)
+#   - Enforces traffic policies (retries, timeouts, circuit breaking)
+#   - Collects telemetry (request counts, latencies, error rates)
+#   - Enforces authorization policies (who can call whom)
+#
+# This file configures Istio installation via `istioctl install -f`.
+# We use the "default" profile which installs istiod + ingress gateway.
+# =============================================================================
+
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: retail-istio
+  namespace: istio-system
+spec:
+  profile: default
+
+  meshConfig:
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+
+    enableTracing: true
+    defaultConfig:
+      tracing:
+        sampling: 100.0
+        zipkin:
+          address: "jaeger-collector.retail-observe.svc.cluster.local:9411"
+
+      holdApplicationUntilProxyStarts: true
+
+    outboundTrafficPolicy:
+      mode: REGISTRY_ONLY
+
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        k8s:
+          service:
+            type: NodePort
+            ports:
+              - name: http2
+                port: 80
+                targetPort: 8080
+                nodePort: 30080
+              - name: https
+                port: 443
+                targetPort: 8443
+                nodePort: 30443
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+  values:
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi

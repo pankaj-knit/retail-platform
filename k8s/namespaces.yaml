@@ -1,0 +1,52 @@
+# Kubernetes Namespaces
+# ---------------------
+# Namespaces provide logical isolation within a cluster.
+# Think of them as "folders" for your K8s resources.
+#
+# Why separate namespaces?
+# 1. Organization: Group related resources together
+# 2. Access control: Apply RBAC policies per namespace
+# 3. Resource quotas: Limit CPU/memory per namespace
+# 4. Istio sidecar injection: Enable per namespace (not cluster-wide)
+#
+# We use 3 namespaces:
+# - retail-app:    Our 4 microservices + frontend
+# - retail-data:   Postgres + Kafka (data layer)
+# - retail-observe: Observability stack (Jaeger, Prometheus, Grafana, OTel)
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: retail-app
+  labels:
+    name: retail-app
+    # This label tells Istio to automatically inject Envoy sidecar
+    # proxies into every pod created in this namespace.
+    # Without this, pods won't be part of the service mesh.
+    istio-injection: enabled
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: retail-data
+  labels:
+    name: retail-data
+    # Data layer does NOT get Istio sidecars.
+    # Reason: Postgres and Kafka have their own protocols that
+    # don't benefit from HTTP-level mesh features (retries, circuit breaking).
+    # Adding sidecars would add latency with no real benefit.
+    istio-injection: disabled
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: retail-observe
+  labels:
+    name: retail-observe
+    # Observability tools also skip Istio sidecars.
+    # They need to receive telemetry from all services without
+    # mesh interference.
+    istio-injection: disabled

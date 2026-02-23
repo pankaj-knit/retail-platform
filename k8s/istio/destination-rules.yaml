@@ -1,0 +1,195 @@
+# =============================================================================
+# Istio DestinationRules
+# =============================================================================
+#
+# DestinationRules define policies AFTER routing has happened.
+# While VirtualServices decide WHERE traffic goes,
+# DestinationRules decide HOW it gets there:
+#
+#   - TLS mode (mTLS between services)
+#   - Load balancing algorithm
+#   - Connection pool settings
+#   - Outlier detection (circuit breaking at the mesh level)
+#
+# Outlier detection vs application-level circuit breakers (Resilience4j):
+#   - Resilience4j: protects the CALLER from a failing DEPENDENCY
+#     (e.g., Order Service stops calling Inventory gRPC after 5 failures)
+#   - Istio outlier detection: removes unhealthy POD INSTANCES from the
+#     load balancer pool (e.g., if pod-2 returns 5xx, stop routing to it)
+#   Both work together -- different layers, complementary protection.
+#
+# =============================================================================
+
+---
+# Kafka and Postgres live in retail-data (no Istio sidecar).
+# Disable mTLS so the client-side Envoy proxy passes traffic as plain TCP.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: kafka-dr
+  namespace: retail-app
+spec:
+  host: kafka.retail-data.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: postgres-dr
+  namespace: retail-app
+spec:
+  host: postgres.retail-data.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: otel-collector-dr
+  namespace: retail-app
+spec:
+  host: otel-collector.retail-observe.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: jaeger-dr
+  namespace: retail-app
+spec:
+  host: jaeger.retail-observe.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: user-service-dr
+  namespace: retail-app
+spec:
+  host: user-service.retail-app.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: LEAST_REQUEST
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: DEFAULT
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: order-service-dr
+  namespace: retail-app
+spec:
+  host: order-service.retail-app.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: LEAST_REQUEST
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: DEFAULT
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-service-dr
+  namespace: retail-app
+spec:
+  host: payment-service.retail-app.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: LEAST_REQUEST
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: DEFAULT
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: inventory-service-dr
+  namespace: retail-app
+spec:
+  host: inventory-service.retail-app.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: LEAST_REQUEST
+    connectionPool:
+      tcp:
+        maxConnections: 150
+      http:
+        h2UpgradePolicy: DEFAULT
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: frontend-dr
+  namespace: retail-app
+spec:
+  host: frontend.retail-app.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 200
+      http:
+        maxRequestsPerConnection: 0
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 15s
+      maxEjectionPercent: 30

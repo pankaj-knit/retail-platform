@@ -1,0 +1,110 @@
+# =============================================================================
+# Zookeeper on Kubernetes
+# =============================================================================
+#
+# What is Zookeeper?
+#   Zookeeper is a coordination service that Kafka depends on (in traditional mode).
+#   It handles:
+#   - Broker registration: Kafka brokers register themselves with Zookeeper
+#   - Leader election: When a Kafka partition leader dies, Zookeeper helps elect a new one
+#   - Configuration management: Stores topic configs, ACLs, quotas
+#   - Health monitoring: Detects when Kafka brokers go down
+#
+# Why do we need it?
+#   Kafka (in traditional mode) cannot run without Zookeeper. It's like a
+#   "brain" that coordinates the Kafka cluster. Newer Kafka versions (3.3+)
+#   support KRaft mode which removes the Zookeeper dependency, but the
+#   traditional mode is more battle-tested and easier to debug.
+#
+# This file contains 2 resources:
+#   1. StatefulSet - Runs the Zookeeper container
+#   2. Service     - Stable DNS name for Kafka to connect to
+# =============================================================================
+
+
+# --- StatefulSet ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: retail-data
+  labels:
+    app: zookeeper
+spec:
+  serviceName: zookeeper
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:7.6.0
+          # Why Confluent image instead of apache/zookeeper?
+          # Confluent packages are the industry standard for Kafka ecosystems.
+          # They include better defaults, monitoring hooks, and are tested
+          # together with the Confluent Kafka image we'll use.
+
+          ports:
+            - containerPort: 2181
+              name: client
+              # Port 2181: The main port Kafka connects to.
+              # Zookeeper also uses 2888 (follower) and 3888 (election)
+              # for multi-node setups, but we only have 1 node.
+
+          env:
+            # ZOOKEEPER_CLIENT_PORT: The port Zookeeper listens on for
+            # client connections (i.e., Kafka connecting to it).
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+
+            # ZOOKEEPER_TICK_TIME: The basic time unit in milliseconds
+            # used by Zookeeper for heartbeats and timeouts.
+            # 2000ms is the standard default.
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          readinessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 20
+            periodSeconds: 15
+
+---
+
+# --- Service ---
+# Kafka will connect to: zookeeper.retail-data.svc.cluster.local:2181
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: retail-data
+  labels:
+    app: zookeeper
+spec:
+  type: ClusterIP
+  ports:
+    - port: 2181
+      targetPort: client
+      protocol: TCP
+      name: client
+  selector:
+    app: zookeeper

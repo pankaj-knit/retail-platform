@@ -1,0 +1,202 @@
+# =============================================================================
+# Apache Kafka on Kubernetes
+# =============================================================================
+#
+# What is Kafka?
+#   Kafka is a distributed event streaming platform. In our app, it's the
+#   "postal service" between microservices for async communication.
+#
+#   Instead of Order Service directly calling Payment Service (synchronous,
+#   tightly coupled), Order Service publishes an "OrderCreated" event to Kafka.
+#   Payment Service subscribes to that topic and processes it independently.
+#
+#   Benefits:
+#   - Decoupling: Services don't need to know about each other
+#   - Resilience: If Payment Service is down, events queue up in Kafka
+#   - Replay: Events are stored on disk, can be re-processed
+#   - Scalability: Multiple consumers can process events in parallel
+#
+# Key Kafka concepts:
+#   - Broker:    A Kafka server (we run 1 for local dev)
+#   - Topic:     A named channel for events (e.g., "order-created")
+#   - Producer:  A service that publishes events to a topic
+#   - Consumer:  A service that reads events from a topic
+#   - Partition:  A topic is split into partitions for parallelism
+#   - Offset:    A pointer to the last message a consumer has read
+#
+# This file contains 3 resources:
+#   1. StatefulSet - Runs the Kafka broker
+#   2. Service     - Internal DNS for inter-service communication
+#   3. Service     - External access (NodePort) for debugging
+# =============================================================================
+
+
+# --- StatefulSet ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: retail-data
+  labels:
+    app: kafka
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.0
+
+          ports:
+            - containerPort: 9092
+              name: internal
+              # Port 9092: Used by services INSIDE the K8s cluster
+              # (our Spring Boot microservices connect here)
+
+            - containerPort: 29092
+              name: external
+              # Port 29092: Used for connections from OUTSIDE the cluster
+              # (for debugging with local Kafka tools if needed)
+
+          env:
+            # --- Broker Identity ---
+            - name: KAFKA_BROKER_ID
+              value: "1"
+
+            # --- Zookeeper Connection ---
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "zookeeper.retail-data.svc.cluster.local:2181"
+
+            # --- Listener Configuration ---
+            # We define 2 listeners:
+            # - INTERNAL: For pods inside K8s (our microservices)
+            # - EXTERNAL: For access from outside K8s (debugging)
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+
+            - name: KAFKA_LISTENERS
+              value: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092"
+
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "INTERNAL://kafka.retail-data.svc.cluster.local:9092,EXTERNAL://localhost:29092"
+
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+
+            # --- Topic Defaults ---
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+
+            # Disable auto-creation: all topics are provisioned by deploy-kafka.sh.
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "false"
+
+            # Suppress Confluent metrics reporter (not needed for local dev)
+            # and prevent the entrypoint from deriving a deprecated "port" property.
+            - name: KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE
+              value: "false"
+
+            # Explicitly set to empty to prevent the Confluent entrypoint
+            # from auto-detecting and failing on the deprecated "port" config.
+            - name: KAFKA_PORT
+              value: ""
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+          # Kafka takes longer to start than most services because it needs
+          # to connect to Zookeeper and recover its log state.
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 45
+            periodSeconds: 15
+
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+              # Kafka stores message logs here. Like Postgres, we use
+              # persistent storage so messages survive broker restarts.
+
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+
+# --- Internal Service ---
+# Used by our Spring Boot microservices to connect to Kafka.
+# Connection string: kafka.retail-data.svc.cluster.local:9092
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: retail-data
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9092
+      targetPort: internal
+      protocol: TCP
+      name: tcp-kafka
+  selector:
+    app: kafka
+
+---
+
+# --- External Service (NodePort) ---
+# Exposes Kafka on your Mac at localhost:30003 for debugging.
+# You can use this with local Kafka tools like:
+#   kafka-console-consumer --bootstrap-server localhost:30003 --topic order-created
+#
+# NodePort type: K8s picks a port on every node (30003) and forwards
+# traffic to the pod. Combined with kind's port mappings, this makes
+# Kafka accessible from your Mac.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-external
+  namespace: retail-data
+  labels:
+    app: kafka
+spec:
+  type: NodePort
+  ports:
+    - port: 29092
+      targetPort: external
+      nodePort: 30003
+      protocol: TCP
+      name: external
+  selector:
+    app: kafka

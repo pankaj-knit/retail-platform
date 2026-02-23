@@ -1,0 +1,212 @@
+# =============================================================================
+# User Service - Kubernetes Deployment + Service
+# =============================================================================
+#
+# Secrets are fetched from Vault using a Vault Agent init container.
+#
+# How it works:
+#   1. Pod starts with TWO containers: vault-agent (init) + user-service (app)
+#   2. vault-agent runs FIRST (it's an initContainer)
+#   3. vault-agent authenticates to Vault using the pod's ServiceAccount token
+#   4. vault-agent fetches secrets and writes them to a shared volume as files
+#   5. vault-agent exits
+#   6. user-service starts, reads secrets from the shared volume
+#
+# This pattern is called "Vault Agent Sidecar Injection" (manual version).
+# In production, you'd use the Vault Agent Injector (mutating webhook) which
+# does this automatically. For learning, we do it explicitly.
+#
+# No K8s Secrets needed -- all sensitive data comes from Vault.
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: retail-app
+  labels:
+    app: user-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      serviceAccountName: user-service
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - user-service
+                topologyKey: kubernetes.io/hostname
+
+      # --- Init Container: Vault Agent ---
+      # Runs BEFORE the main container. Fetches secrets from Vault
+      # and writes them to /vault/secrets/ (shared volume).
+      initContainers:
+        - name: vault-agent
+          image: hashicorp/vault:1.17
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Authenticate to Vault using K8s ServiceAccount token.
+              # The SA token is auto-mounted at /var/run/secrets/kubernetes.io/serviceaccount/token
+              export VAULT_ADDR=http://vault.retail-data.svc.cluster.local:8200
+
+              # Login to Vault using the K8s auth method.
+              # This sends our SA token to Vault, which verifies it with the K8s API.
+              # Vault returns a Vault token scoped to our policy.
+              VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login \
+                role=user-service \
+                jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token))
+
+              export VAULT_TOKEN
+
+              # Fetch secrets and write to shared volume
+              vault kv get -field=value secret/jwt/private-key > /vault/secrets/jwt-private-key.pem
+              vault kv get -field=value secret/jwt/public-key > /vault/secrets/jwt-public-key.pem
+              vault kv get -field=url secret/database/user-service > /vault/secrets/db-url
+              vault kv get -field=username secret/database/user-service > /vault/secrets/db-username
+              vault kv get -field=password secret/database/user-service > /vault/secrets/db-password
+
+              echo "Vault secrets fetched successfully."
+
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+
+      # --- Main Container: User Service ---
+      containers:
+        - name: user-service
+          image: user-service:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 8080
+
+          env:
+            - name: VAULT_SECRETS_PATH
+              value: "/vault/secrets"
+            - name: DRAGONFLY_HOST
+              value: "dragonfly.retail-data.svc.cluster.local"
+            - name: DRAGONFLY_PORT
+              value: "6379"
+
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 5
+
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+
+      # Shared volume between init container and main container.
+      # emptyDir is a temporary volume that exists for the lifetime of the pod.
+      # The init container writes secrets here, the app container reads them.
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+            # medium: Memory stores the volume in RAM (tmpfs), not on disk.
+            # Secrets never touch the filesystem -- they exist only in memory.
+            # When the pod dies, the RAM is freed and secrets are gone.
+            sizeLimit: 1Mi
+
+---
+
+# --- Service ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: retail-app
+  labels:
+    app: user-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+      protocol: TCP
+  selector:
+    app: user-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-service-pdb
+  namespace: retail-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: user-service
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: user-service-hpa
+  namespace: retail-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: user-service
+  minReplicas: 2
+  maxReplicas: 4
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

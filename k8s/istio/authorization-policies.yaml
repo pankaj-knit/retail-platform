@@ -1,0 +1,187 @@
+# =============================================================================
+# Istio AuthorizationPolicies
+# =============================================================================
+#
+# AuthorizationPolicies define WHO can call WHOM at the mesh level.
+# This is defense-in-depth on top of K8s NetworkPolicies:
+#
+#   NetworkPolicy:        Layer 3/4 (IP + port)
+#   AuthorizationPolicy:  Layer 7 (HTTP method, path, service identity)
+#
+# Istio identifies services by their SPIFFE identity:
+#   cluster.local/ns/<namespace>/sa/<service-account>
+#
+# Strategy: default-deny + explicit allow rules.
+#
+# NOTE on path matching: Istio's `*` matches a SINGLE path segment only.
+# For nested paths like /api/payments/order/1 we list each depth level
+# explicitly rather than relying on a single `*` glob.
+# =============================================================================
+
+---
+# Default deny: no service in retail-app can call any other service
+# unless explicitly allowed below.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: retail-app
+spec:
+  {}
+
+---
+# Allow Istio Ingress Gateway to reach all services
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-gateway
+  namespace: retail-app
+spec:
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+
+---
+# Frontend BFF → User Service
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-backends
+  namespace: retail-app
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app: user-service
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-app/sa/frontend"
+      to:
+        - operation:
+            methods: ["GET", "POST", "PUT", "DELETE"]
+            paths:
+              - "/api/auth"
+              - "/api/auth/*"
+              - "/api/auth/*/*"
+              - "/api/users"
+              - "/api/users/*"
+              - "/api/users/*/*"
+
+---
+# Frontend BFF → Inventory Service
+# Order Service → Inventory Service (gRPC on port 9090)
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-inventory
+  namespace: retail-app
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app: inventory-service
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-app/sa/frontend"
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths:
+              - "/api/products"
+              - "/api/products/*"
+              - "/api/products/*/*"
+              - "/api/inventory"
+              - "/api/inventory/*"
+              - "/api/inventory/*/*"
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-app/sa/order-service"
+      to:
+        - operation:
+            ports: ["9090"]
+
+---
+# Frontend BFF → Order Service
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-orders
+  namespace: retail-app
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app: order-service
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-app/sa/frontend"
+      to:
+        - operation:
+            methods: ["GET", "POST", "PUT", "DELETE"]
+            paths:
+              - "/api/orders"
+              - "/api/orders/*"
+              - "/api/orders/*/*"
+              - "/api/admin"
+              - "/api/admin/*"
+              - "/api/admin/*/*"
+
+---
+# Frontend BFF → Payment Service
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-payments
+  namespace: retail-app
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app: payment-service
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-app/sa/frontend"
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths:
+              - "/api/payments"
+              - "/api/payments/*"
+              - "/api/payments/*/*"
+              - "/api/payments/*/*/*"
+              - "/api/admin"
+              - "/api/admin/*"
+              - "/api/admin/*/*"
+
+---
+# Allow health checks from kubelet and Prometheus.
+# Kubelet probes come without mTLS identity (no sidecar on the node),
+# so we cannot restrict by `from`. We limit to exact health paths only.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-health-checks
+  namespace: retail-app
+spec:
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            methods: ["GET"]
+            paths:
+              - "/actuator/health"
+              - "/actuator/health/*"
+              - "/actuator/prometheus"
+              - "/"

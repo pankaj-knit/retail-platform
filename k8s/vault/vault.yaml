@@ -1,0 +1,214 @@
+# =============================================================================
+# HashiCorp Vault on Kubernetes
+# =============================================================================
+#
+# What is Vault?
+#   Vault is a secrets management tool. Instead of storing passwords, keys,
+#   and tokens in K8s Secrets (which are just base64-encoded, not encrypted),
+#   Vault provides:
+#     - Encryption at rest and in transit
+#     - Fine-grained access policies (who can read what)
+#     - Audit logging (who accessed which secret, when)
+#     - Dynamic secrets (generate short-lived DB credentials on demand)
+#     - Lease/expiration (secrets auto-expire)
+#
+# How pods authenticate to Vault:
+#   We use the "Kubernetes auth method". When a pod starts, K8s gives it a
+#   Service Account token (a JWT). The pod sends this token to Vault.
+#   Vault calls the K8s API to verify: "Is this token real? What Service
+#   Account does it belong to?" If valid, Vault returns a Vault token
+#   scoped to a specific policy (e.g., "can read jwt-keys").
+#
+# This file contains 4 resources:
+#   1. ServiceAccount     - Identity for the Vault pod
+#   2. ConfigMap          - Vault server configuration
+#   3. StatefulSet        - Runs the Vault server
+#   4. Service            - Stable DNS name for Vault
+# =============================================================================
+
+
+# --- ServiceAccount for Vault ---
+# Vault needs a ServiceAccount with permissions to call the K8s TokenReview
+# API (to verify pod Service Account tokens during authentication).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: retail-data
+  labels:
+    app: vault
+
+---
+
+# --- ClusterRoleBinding ---
+# Grants Vault permission to verify Service Account tokens cluster-wide.
+# This is required for the Kubernetes auth method to work.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: retail-data
+
+---
+
+# --- ConfigMap: Vault Server Configuration ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: retail-data
+data:
+  vault-config.hcl: |
+    # Vault runs in "dev" mode for local development.
+    # In production, you'd use "file" or "raft" storage backend
+    # with TLS enabled and auto-unseal via cloud KMS.
+
+    # Storage backend: where Vault persists encrypted secrets.
+    # "file" stores data on the PVC. Simple and works for single-node.
+    storage "file" {
+      path = "/vault/data"
+    }
+
+    # Listener: how clients connect to Vault.
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = true
+      # TLS disabled for local dev. In production, ALWAYS enable TLS.
+      # Vault refuses to start without TLS unless you explicitly disable it.
+    }
+
+    # API address: what Vault advertises to clients.
+    api_addr = "http://vault.retail-data.svc.cluster.local:8200"
+
+    # Disable mlock: mlock prevents memory from being swapped to disk
+    # (protecting secrets in memory). Disabled in containers because
+    # it requires elevated privileges (IPC_LOCK capability).
+    disable_mlock = true
+
+    # UI: enable the web-based management interface.
+    ui = true
+
+---
+
+# --- StatefulSet ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: retail-data
+  labels:
+    app: vault
+spec:
+  serviceName: vault
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+    spec:
+      serviceAccountName: vault
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.17
+          # Using a specific version tag, not "latest".
+          # In production, always pin versions for reproducibility.
+
+          command: ["vault", "server", "-config=/vault/config/vault-config.hcl"]
+
+          ports:
+            - containerPort: 8200
+              name: http
+              # Port 8200: Vault API + UI
+
+          env:
+            # VAULT_ADDR tells the vault CLI inside the container
+            # where to connect. Used by health checks and init scripts.
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+
+          volumeMounts:
+            - name: vault-config
+              mountPath: /vault/config
+            - name: vault-data
+              mountPath: /vault/data
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          # Vault has a dedicated health endpoint.
+          # /v1/sys/health returns:
+          #   200 = initialized + unsealed + active
+          #   429 = unsealed + standby
+          #   472 = disaster recovery secondary
+          #   501 = not initialized
+          #   503 = sealed
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&uninitcode=204&sealedcode=204
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&uninitcode=204&sealedcode=204
+              port: 8200
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          # Vault needs IPC_LOCK capability to use mlock (memory locking).
+          # We disabled mlock in config, but adding the capability is
+          # good practice in case you enable it later.
+          securityContext:
+            capabilities:
+              add: ["IPC_LOCK"]
+
+      volumes:
+        - name: vault-config
+          configMap:
+            name: vault-config
+
+  volumeClaimTemplates:
+    - metadata:
+        name: vault-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+
+# --- Service ---
+# Vault is accessible at: vault.retail-data.svc.cluster.local:8200
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: retail-data
+  labels:
+    app: vault
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8200
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: vault

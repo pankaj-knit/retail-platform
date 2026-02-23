@@ -1,0 +1,121 @@
+spring:
+  application:
+    name: payment-service
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_db}
+    username: ${SPRING_DATASOURCE_USERNAME:retail_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:CHANGE_ME_SET_ENV_VAR}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL:10}
+      minimum-idle: ${HIKARI_MIN_IDLE:5}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      leak-detection-threshold: 60000
+      pool-name: payment-pool
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        "[jdbc.batch_size]": 25
+        "[order_inserts]": true
+        "[order_updates]": true
+        "[query.plan_cache_max_size]": 2048
+        "[query.in_clause_parameter_padding]": true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+    consumer:
+      group-id: payment-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        "[spring.json.trusted.packages]": "com.retail.*"
+        "[spring.json.type.mapping]": >-
+          com.retail.orderservice.kafka.event.OrderCreatedEvent:com.retail.paymentservice.kafka.event.OrderCreatedEvent,
+          com.retail.orderservice.kafka.event.OrderCreatedEvent$OrderItemDetail:com.retail.paymentservice.kafka.event.OrderCreatedEvent$OrderItemDetail
+        "[spring.deserializer.value.delegate.class]": org.springframework.kafka.support.serializer.JsonDeserializer
+        "[max.poll.records]": 50
+        "[session.timeout.ms]": 30000
+        "[heartbeat.interval.ms]": 10000
+    listener:
+      ack-mode: RECORD
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3}
+
+  data:
+    redis:
+      host: ${DRAGONFLY_HOST:localhost}
+      port: ${DRAGONFLY_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: 8080
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/plain
+    min-response-size: 1024
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector.retail-observe.svc.cluster.local:4318}/v1/traces
+
+vault:
+  secrets-path: ${VAULT_SECRETS_PATH:config/jwt}
+
+jwt:
+  public-key-path: ${vault.secrets-path}/jwt-public-key.pem
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      kafkaProducer:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+
+logging:
+  level:
+    root: INFO
+    "[com.retail.paymentservice]": ${LOG_LEVEL_APP:INFO}

@@ -1,0 +1,68 @@
+# =============================================================================
+# Istio Rate Limiting via EnvoyFilter
+# =============================================================================
+#
+# How Istio rate limiting works:
+#   Envoy has a built-in "local rate limit" filter that counts requests
+#   per time window. This is applied at the ingress gateway level,
+#   protecting all backend services from excessive traffic.
+#
+# This vs application-level rate limiting (Bucket4j):
+#   - Istio rate limit: global, at the gateway edge, per-IP
+#     (stops traffic before it reaches your app)
+#   - Bucket4j: per-service, per-user/API-key, fine-grained
+#     (business logic level, e.g., 100 orders/min per user)
+#   Both are needed: Istio for DDoS protection, Bucket4j for business rules.
+#
+# Configuration:
+#   - 100 requests per second globally at the ingress gateway
+#   - Returns HTTP 429 (Too Many Requests) when exceeded
+# =============================================================================
+
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ingress-rate-limit
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.local_ratelimit
+          typed_config:
+            "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+            type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+            value:
+              stat_prefix: http_local_rate_limiter
+              token_bucket:
+                max_tokens: 100
+                tokens_per_fill: 100
+                fill_interval: 1s
+              filter_enabled:
+                runtime_key: local_rate_limit_enabled
+                default_value:
+                  numerator: 100
+                  denominator: HUNDRED
+              filter_enforced:
+                runtime_key: local_rate_limit_enforced
+                default_value:
+                  numerator: 100
+                  denominator: HUNDRED
+              response_headers_to_add:
+                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                  header:
+                    key: x-local-rate-limit
+                    value: "true"

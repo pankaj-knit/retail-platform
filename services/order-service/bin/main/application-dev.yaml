@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    password: retail_pass_2026
+
+logging:
+  level:
+    com.retail.orderservice: DEBUG
+
+management:
+  endpoint:
+    health:
+      show-details: always

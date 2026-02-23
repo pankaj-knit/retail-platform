@@ -1,0 +1,174 @@
+# =============================================================================
+# Inventory Service - Kubernetes Deployment + Service
+# =============================================================================
+# Uses Vault initContainer to fetch secrets (same pattern as User Service).
+# Also connects to Kafka for async event processing.
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: retail-app
+  labels:
+    app: inventory-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      serviceAccountName: inventory-service
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - inventory-service
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: vault-agent
+          image: hashicorp/vault:1.17
+          command: ["sh", "-c"]
+          args:
+            - |
+              export VAULT_ADDR=http://vault.retail-data.svc.cluster.local:8200
+              VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login \
+                role=inventory-service \
+                jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token))
+              export VAULT_TOKEN
+              vault kv get -field=value secret/jwt/public-key > /vault/secrets/jwt-public-key.pem
+              vault kv get -field=url secret/database/inventory-service > /vault/secrets/db-url
+              vault kv get -field=username secret/database/inventory-service > /vault/secrets/db-username
+              vault kv get -field=password secret/database/inventory-service > /vault/secrets/db-password
+              echo "Vault secrets fetched successfully."
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+      containers:
+        - name: inventory-service
+          image: inventory-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: grpc
+          env:
+            - name: VAULT_SECRETS_PATH
+              value: "/vault/secrets"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka.retail-data.svc.cluster.local:9092"
+            - name: DRAGONFLY_HOST
+              value: "dragonfly.retail-data.svc.cluster.local"
+            - name: DRAGONFLY_PORT
+              value: "6379"
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+  namespace: retail-app
+  labels:
+    app: inventory-service
+spec:
+  type: ClusterIP
+  selector:
+    app: inventory-service
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+      protocol: TCP
+    - port: 9090
+      targetPort: 9090
+      name: grpc
+      protocol: TCP
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-service-pdb
+  namespace: retail-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: inventory-service
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inventory-service-hpa
+  namespace: retail-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inventory-service
+  minReplicas: 2
+  maxReplicas: 6
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

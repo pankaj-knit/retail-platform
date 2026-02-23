@@ -1,0 +1,48 @@
+# =============================================================================
+# Istio PeerAuthentication - Mutual TLS (mTLS)
+# =============================================================================
+#
+# What is mTLS?
+#   Normal TLS: client verifies the server's identity (one-way).
+#   Mutual TLS: BOTH sides verify each other's identity (two-way).
+#
+#   In a service mesh, every service gets a certificate from Istio's CA
+#   (built into istiod). When Service A calls Service B:
+#     1. A presents its cert to B's Envoy sidecar
+#     2. B presents its cert to A's Envoy sidecar
+#     3. Both verify the certs were issued by the same CA
+#     4. Traffic is encrypted end-to-end
+#
+#   This means: even if an attacker gets inside your cluster network,
+#   they can't eavesdrop on or impersonate service traffic.
+#
+# Modes:
+#   STRICT:     Only accept mTLS connections (reject plaintext)
+#   PERMISSIVE: Accept both mTLS and plaintext (migration mode)
+#   DISABLE:    No mTLS
+#
+# We use STRICT for the app namespace (zero-trust) and PERMISSIVE for
+# the data namespace (Kafka/Postgres use their own protocols).
+# =============================================================================
+
+---
+# Strict mTLS for all services in retail-app
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: retail-app-strict-mtls
+  namespace: retail-app
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Permissive for data namespace (Postgres/Kafka don't have sidecars)
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: retail-data-permissive
+  namespace: retail-data
+spec:
+  mtls:
+    mode: PERMISSIVE

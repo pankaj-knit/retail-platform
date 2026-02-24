@@ -516,7 +516,7 @@ data:
                 relativeTimeRange: { from: 600, to: 0 }
                 datasourceUid: PBFA97CFB590B2093
                 model:
-                  expr: sum(kafka_consumer_fetch_manager_records_lag_max{namespace="retail-app"}) by (app)
+                  expr: sum(kafka_consumer_fetch_manager_records_lag_max{namespace="retail-app"} >= 0) by (app)
                   instant: false
                   range: true
               - refId: B
@@ -526,6 +526,8 @@ data:
                   type: reduce
                   expression: A
                   reducer: last
+                  settings:
+                    mode: dropNN
               - refId: C
                 datasourceUid: __expr__
                 model:
@@ -872,6 +874,18 @@ data:
           { "text": "order-service", "value": "order-service", "selected": false },
           { "text": "payment-service", "value": "payment-service", "selected": false },
           { "text": "inventory-service", "value": "inventory-service", "selected": false }
+        ] },
+        { "name": "state", "label": "Thread State", "type": "custom",
+        "query": "All : .+,blocked : blocked,new : new,runnable : runnable,terminated : terminated,timed-waiting : timed-waiting,waiting : waiting",
+        "current": { "text": "All", "value": ".+" },
+        "options": [
+          { "text": "All", "value": ".+", "selected": true },
+          { "text": "blocked", "value": "blocked", "selected": false },
+          { "text": "new", "value": "new", "selected": false },
+          { "text": "runnable", "value": "runnable", "selected": false },
+          { "text": "terminated", "value": "terminated", "selected": false },
+          { "text": "timed-waiting", "value": "timed-waiting", "selected": false },
+          { "text": "waiting", "value": "waiting", "selected": false }
         ] }] },
       "panels": [
         { "id": 1, "title": "Heap Memory Used (MB)", "type": "timeseries",
@@ -897,7 +911,7 @@ data:
           "targets": [{ "expr": "sum(jvm_threads_live_threads{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "{{app}}" }] },
         { "id": 8, "title": "Thread States", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-          "targets": [{ "expr": "sum(jvm_threads_states_threads{namespace=\"retail-app\", app=~\"${service}\"}) by (app, state)", "legendFormat": "{{app}} {{state}}" }] },
+          "targets": [{ "expr": "sum(jvm_threads_states_threads{namespace=\"retail-app\", app=~\"${service}\", state=~\"${state}\"}) by (app, state)", "legendFormat": "{{app}} {{state}}" }] },
         { "id": 9, "title": "Direct Buffer Memory (MB)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
           "targets": [{ "expr": "sum(jvm_buffer_memory_used_bytes{namespace=\"retail-app\", app=~\"${service}\"}) by (app, id) / 1048576", "legendFormat": "{{app}} {{id}}" }] },
@@ -1028,27 +1042,32 @@ data:
         { "id": 3, "title": "System Load Average (1m)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
           "targets": [{ "expr": "avg(system_load_average_1m{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "{{app}}" }] },
-        { "id": 4, "title": "Open File Descriptors vs Max", "type": "timeseries",
+        { "id": 4, "title": "I/O Wait %", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "description": "CPU time spent waiting for disk I/O. Sustained high values indicate storage bottlenecks or queries spilling to disk.",
+          "targets": [{ "expr": "avg by (node) (rate(node_cpu_seconds_total{mode=\"iowait\"}[5m])) * 100", "legendFormat": "{{node}}" }],
+          "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } } },
+        { "id": 5, "title": "Open File Descriptors vs Max", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
           "description": "If open approaches max, the JVM will crash with 'Too many open files'.",
           "targets": [
             { "expr": "sum(process_files_open_files{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "open {{app}}" },
             { "expr": "max(process_files_max_files{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "max {{app}}" }
           ] },
-        { "id": 5, "title": "Disk Free (GB)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        { "id": 6, "title": "Disk Free (GB)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
           "targets": [{ "expr": "min(disk_free_bytes{namespace=\"retail-app\", app=~\"${service}\"}) by (app) / 1073741824", "legendFormat": "{{app}}" }] },
-        { "id": 6, "title": "Process Uptime (hours)", "type": "stat",
-          "gridPos": { "h": 4, "w": 12, "x": 12, "y": 16 },
+        { "id": 7, "title": "Process Uptime (hours)", "type": "stat",
+          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 24 },
           "targets": [{ "expr": "max(process_uptime_seconds{namespace=\"retail-app\", app=~\"${service}\"}) by (app) / 3600", "legendFormat": "{{app}}" }] },
-        { "id": 7, "title": "Thread Pool - Active vs Queue Remaining", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+        { "id": 8, "title": "Thread Pool - Active vs Queue Remaining", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
           "targets": [
             { "expr": "sum(executor_active_threads{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "active {{app}}" },
             { "expr": "sum(executor_queued_tasks{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "queued {{app}}" }
           ] },
-        { "id": 8, "title": "Thread Pool - Pool Size vs Max", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+        { "id": 9, "title": "Thread Pool - Pool Size vs Max", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
           "targets": [
             { "expr": "sum(executor_pool_size_threads{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "current {{app}}" },
             { "expr": "max(executor_pool_max_threads{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "max {{app}}" }

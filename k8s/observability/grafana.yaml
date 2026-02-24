@@ -780,6 +780,10 @@ data:
       "title": "Retail Platform - Service Overview",
       "tags": ["retail", "overview"], "timezone": "browser",
       "refresh": "10s", "time": { "from": "now-1h", "to": "now" },
+      "links": [
+        { "title": "K8s Cluster (HPA, OOM, Restarts)", "type": "link", "url": "/d/retail-k8s-cluster", "icon": "external link", "tooltip": "View HPA status, OOM kills, resource governance", "targetBlank": false },
+        { "title": "Dragonfly Cache", "type": "link", "url": "/d/retail-dragonfly", "icon": "external link", "tooltip": "View cache hit rates, memory, evictions", "targetBlank": false }
+      ],
       "templating": { "list": [{ "name": "service", "label": "Service", "type": "custom",
         "query": "All : .+,user-service : user-service,order-service : order-service,payment-service : payment-service,inventory-service : inventory-service",
         "current": { "text": "All", "value": ".+" },
@@ -789,7 +793,16 @@ data:
           { "text": "order-service", "value": "order-service", "selected": false },
           { "text": "payment-service", "value": "payment-service", "selected": false },
           { "text": "inventory-service", "value": "inventory-service", "selected": false }
-        ] }] },
+        ]},
+        { "name": "pod", "label": "Pod", "type": "query",
+          "datasource": "Prometheus",
+          "query": "label_values(kube_pod_info{namespace=\"retail-app\", created_by_name=~\"${service}.*\"}, pod)",
+          "refresh": 2,
+          "includeAll": true,
+          "allValue": ".+",
+          "multi": false,
+          "sort": 1
+        }] },
       "panels": [
         { "id": 1, "title": "HTTP Request Rate (per service)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
@@ -1324,60 +1337,81 @@ data:
           "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
           "targets": [{ "expr": "sum(kube_deployment_status_replicas{namespace=~\"${namespace}\"} - kube_deployment_status_replicas_available{namespace=~\"${namespace}\"}) or vector(0)", "legendFormat": "" }],
           "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}] } } } },
+        { "id": 20, "title": "HPA Status", "type": "table",
+          "description": "Current state of all Horizontal Pod Autoscalers — replicas, target utilization, and scaling capacity.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+          "fieldConfig": { "defaults": { "custom": { "filterable": true } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "CPU %" }, "properties": [{ "id": "custom.displayMode", "value": "gradient-gauge" }, { "id": "max", "value": 100 }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 80 }] } }] }
+            ] },
+          "targets": [
+            { "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=~\"${namespace}\"}", "legendFormat": "", "format": "table", "instant": true, "refId": "A" },
+            { "expr": "kube_horizontalpodautoscaler_spec_max_replicas{namespace=~\"${namespace}\"}", "legendFormat": "", "format": "table", "instant": true, "refId": "B" },
+            { "expr": "kube_horizontalpodautoscaler_spec_min_replicas{namespace=~\"${namespace}\"}", "legendFormat": "", "format": "table", "instant": true, "refId": "C" },
+            { "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=~\"${namespace}\"}", "legendFormat": "", "format": "table", "instant": true, "refId": "D" }
+          ],
+          "transformations": [
+            { "id": "seriesToColumns", "options": { "byField": "horizontalpodautoscaler" } },
+            { "id": "organize", "options": {
+              "excludeByName": { "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "__name__ 4": true, "endpoint 1": true, "endpoint 2": true, "endpoint 3": true, "endpoint 4": true, "instance 1": true, "instance 2": true, "instance 3": true, "instance 4": true, "job 1": true, "job 2": true, "job 3": true, "job 4": true, "namespace 1": true, "namespace 2": true, "namespace 3": true, "namespace 4": true, "service 1": true, "service 2": true, "service 3": true, "service 4": true },
+              "renameByName": { "horizontalpodautoscaler": "HPA", "Value #A": "Current", "Value #B": "Max", "Value #C": "Min", "Value #D": "Desired" },
+              "indexByName": { "HPA": 0, "Current": 1, "Desired": 2, "Min": 3, "Max": 4 }
+            } }
+          ] },
         { "id": 7, "title": "Node CPU Usage %", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
           "targets": [{ "expr": "100 - (avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "{{node}}" }],
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } } },
         { "id": 8, "title": "Node Memory Usage %", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
           "targets": [{ "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100", "legendFormat": "{{instance}}" }],
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } } },
         { "id": 9, "title": "Pod CPU Requests vs Limits (by namespace)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
           "targets": [
             { "expr": "sum(kube_pod_container_resource_requests{namespace=~\"${namespace}\", resource=\"cpu\"}) by (namespace)", "legendFormat": "requests {{namespace}}" },
             { "expr": "sum(kube_pod_container_resource_limits{namespace=~\"${namespace}\", resource=\"cpu\"}) by (namespace)", "legendFormat": "limits {{namespace}}" }
           ] },
         { "id": 10, "title": "Pod Memory Requests vs Limits (by namespace, MB)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
           "targets": [
             { "expr": "sum(kube_pod_container_resource_requests{namespace=~\"${namespace}\", resource=\"memory\"}) by (namespace) / 1048576", "legendFormat": "requests {{namespace}}" },
             { "expr": "sum(kube_pod_container_resource_limits{namespace=~\"${namespace}\", resource=\"memory\"}) by (namespace) / 1048576", "legendFormat": "limits {{namespace}}" }
           ] },
         { "id": 11, "title": "Deployment Replicas (desired vs available)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
           "targets": [
             { "expr": "kube_deployment_spec_replicas{namespace=~\"${namespace}\"}", "legendFormat": "desired {{deployment}}" },
             { "expr": "kube_deployment_status_replicas_available{namespace=~\"${namespace}\"}", "legendFormat": "available {{deployment}}" }
           ] },
         { "id": 12, "title": "Container Restarts (by pod)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
           "targets": [{ "expr": "increase(kube_pod_container_status_restarts_total{namespace=~\"${namespace}\"}[5m])", "legendFormat": "{{namespace}}/{{pod}}" }] },
         { "id": 13, "title": "Node Disk Usage %", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
           "targets": [{ "expr": "(1 - node_filesystem_avail_bytes{fstype=\"ext4\"} / node_filesystem_size_bytes{fstype=\"ext4\"}) * 100", "legendFormat": "{{instance}} {{mountpoint}}" }],
           "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } } },
         { "id": 14, "title": "Node Network I/O (bytes/s)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
           "targets": [
             { "expr": "sum(rate(node_network_receive_bytes_total{device!~\"lo|veth.*|cali.*|flannel.*\"}[5m])) by (instance)", "legendFormat": "rx {{instance}}" },
             { "expr": "sum(rate(node_network_transmit_bytes_total{device!~\"lo|veth.*|cali.*|flannel.*\"}[5m])) by (instance)", "legendFormat": "tx {{instance}}" }
           ] },
         { "id": 15, "title": "HPA Current vs Desired Replicas", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
           "targets": [
             { "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=~\"${namespace}\"}", "legendFormat": "current {{horizontalpodautoscaler}}" },
             { "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=~\"${namespace}\"}", "legendFormat": "desired {{horizontalpodautoscaler}}" }
           ] },
         { "id": 16, "title": "PVC Usage (bound vs pending)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
           "targets": [
             { "expr": "sum(kube_persistentvolumeclaim_status_phase{namespace=~\"${namespace}\", phase=\"Bound\"}) by (namespace)", "legendFormat": "bound {{namespace}}" },
             { "expr": "sum(kube_persistentvolumeclaim_status_phase{namespace=~\"${namespace}\", phase=\"Pending\"}) by (namespace)", "legendFormat": "pending {{namespace}}" }
           ] },
         { "id": 17, "title": "OOM Killed Containers", "type": "stat",
           "description": "Containers whose last termination was OOMKilled. Value of 1 means the container was OOM-killed on its most recent restart.",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 60 },
           "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" }, "mappings": [{ "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "OOMKilled", "color": "red" } } }] } },
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "background", "graphMode": "none" },
           "targets": [
@@ -1385,7 +1419,7 @@ data:
           ] },
         { "id": 18, "title": "Pod Memory Usage vs Limit (MB)", "type": "timeseries",
           "description": "Actual memory consumption vs the configured limit. Pods approaching the limit line are at risk of OOMKill.",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 60 },
           "fieldConfig": { "defaults": { "unit": "decmbytes" } },
           "targets": [
             { "expr": "sum(container_memory_working_set_bytes{namespace=~\"${namespace}\", container!=\"\", container!=\"istio-proxy\", container!=\"vault-agent\"}) by (pod) / 1024 / 1024", "legendFormat": "usage {{pod}}" },
@@ -1393,7 +1427,7 @@ data:
           ] },
         { "id": 19, "title": "Container Restart Reasons", "type": "table",
           "description": "Shows the last termination reason for each container — OOMKilled, Error, etc.",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 52 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 68 },
           "fieldConfig": { "defaults": { "custom": { "filterable": true } } },
           "options": { "sortBy": [{ "displayName": "Value", "desc": true }] },
           "targets": [
@@ -1547,12 +1581,14 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              export GF_SMTP_HOST=$(cat /vault/secrets/smtp-host)
-              export GF_SMTP_USER=$(cat /vault/secrets/smtp-user)
-              export GF_SMTP_PASSWORD=$(cat /vault/secrets/smtp-password)
-              export GF_SMTP_FROM_ADDRESS=$(cat /vault/secrets/smtp-from-address)
-              export TEAMS_WEBHOOK_URL=$(cat /vault/secrets/teams-webhook-url)
-              export ALERT_EMAIL_TO=$(cat /vault/secrets/alert-email-to)
+              export GF_SMTP_HOST=$(cat /vault/secrets/smtp-host 2>/dev/null || echo "localhost:25")
+              export GF_SMTP_USER=$(cat /vault/secrets/smtp-user 2>/dev/null || echo "noreply@localhost")
+              export GF_SMTP_PASSWORD=$(cat /vault/secrets/smtp-password 2>/dev/null || echo "placeholder")
+              export GF_SMTP_FROM_ADDRESS=$(cat /vault/secrets/smtp-from-address 2>/dev/null || echo "noreply@localhost")
+              TEAMS_URL=$(cat /vault/secrets/teams-webhook-url 2>/dev/null || echo "")
+              export TEAMS_WEBHOOK_URL="${TEAMS_URL:-https://placeholder.invalid/webhook}"
+              EMAIL_TO=$(cat /vault/secrets/alert-email-to 2>/dev/null || echo "")
+              export ALERT_EMAIL_TO="${EMAIL_TO:-unconfigured@placeholder.invalid}"
               exec /run.sh
           ports:
             - containerPort: 3000

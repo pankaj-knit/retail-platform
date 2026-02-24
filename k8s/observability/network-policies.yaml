@@ -198,3 +198,172 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+
+# ─── Grafana Alloy (Faro receiver) ───
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alloy-netpol
+  namespace: retail-observe
+spec:
+  podSelector:
+    matchLabels:
+      app: alloy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 12347
+          protocol: TCP
+        - port: 12345
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - port: 3100
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+# ─── Blackbox Exporter ───
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: blackbox-exporter-netpol
+  namespace: retail-observe
+spec:
+  podSelector:
+    matchLabels:
+      app: blackbox-exporter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9115
+          protocol: TCP
+  egress:
+    # Istio ingress gateway (HTTP probes via gateway, service:80 -> pod:8080)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+    # Data layer (TCP probes)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: retail-data
+      ports:
+        - port: 9092
+          protocol: TCP
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+# ─── Pushgateway ───
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pushgateway-netpol
+  namespace: retail-observe
+spec:
+  podSelector:
+    matchLabels:
+      app: pushgateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9091
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: synthetic-tests
+      ports:
+        - port: 9091
+          protocol: TCP
+
+# ─── Synthetic Tests CronJob ───
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: synthetic-tests-netpol
+  namespace: retail-observe
+spec:
+  podSelector:
+    matchLabels:
+      app: synthetic-tests
+  policyTypes:
+    - Egress
+  egress:
+    # Istio ingress gateway (tests access frontend via the gateway, service:80 -> pod:8080)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+    # Pushgateway (push results)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pushgateway
+      ports:
+        - port: 9091
+          protocol: TCP
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

@@ -1,0 +1,122 @@
+# =============================================================================
+# Grafana Alloy - Faro Web SDK Receiver
+# =============================================================================
+# Receives browser telemetry from Grafana Faro Web SDK and routes:
+#   - Logs  → Loki (for Web Vitals, JS errors, console logs)
+#   - Traces → OTel Collector → Jaeger (for browser-side distributed traces)
+#
+# The Faro SDK sends a custom JSON payload (not OTLP), so we need Alloy's
+# faro.receiver component to parse and split the data.
+# =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: retail-observe
+data:
+  config.alloy: |
+    // ── Faro receiver: accepts browser telemetry on /collect ──
+    faro.receiver "default" {
+      server {
+        listen_address = "0.0.0.0"
+        listen_port    = 12347
+
+        cors_allowed_origins = ["*"]
+      }
+
+      output {
+        logs   = [loki.write.default.receiver]
+        traces = [otelcol.exporter.otlphttp.default.input]
+      }
+    }
+
+    // ── Forward logs to Loki ──
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.retail-observe.svc.cluster.local:3100/loki/api/v1/push"
+      }
+    }
+
+    // ── Forward traces to OTel Collector ──
+    otelcol.exporter.otlphttp "default" {
+      client {
+        endpoint = "http://otel-collector.retail-observe.svc.cluster.local:4318"
+      }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: retail-observe
+  labels:
+    app: alloy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.5.1
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --stability.level=generally-available
+          ports:
+            - containerPort: 12347
+              name: faro
+            - containerPort: 12345
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: retail-observe
+  labels:
+    app: alloy
+spec:
+  selector:
+    app: alloy
+  ports:
+    - port: 12347
+      targetPort: 12347
+      name: faro
+    - port: 12345
+      targetPort: 12345
+      name: http

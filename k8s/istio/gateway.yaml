@@ -137,6 +137,17 @@ spec:
         perTryTimeout: 5s
         retryOn: 5xx,reset,connect-failure
 
+    # Route /collect to Grafana Alloy (Faro browser telemetry receiver)
+    - match:
+        - uri:
+            prefix: /collect
+      route:
+        - destination:
+            host: alloy.retail-observe.svc.cluster.local
+            port:
+              number: 12347
+      timeout: 5s
+
     # Default: everything else goes to the frontend (Next.js BFF)
     - route:
         - destination:

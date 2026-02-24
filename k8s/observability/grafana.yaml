@@ -749,6 +749,224 @@ data:
               summary: "Dragonfly has {{ $values.B }} connected clients"
               description: "High number of connections to Dragonfly. Check for connection leaks."
 
+          # ── Browser RUM (Faro) ─────────────────────────────────────
+          - uid: alert-js-error-rate
+            title: High JS Error Rate
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: P8E80F9AEF21F6940
+                model:
+                  expr: count_over_time({app="frontend", kind="exception"} [1m])
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [10] }
+            noDataState: OK
+            for: 5m
+            labels:
+              severity: warning
+              category: browser
+            annotations:
+              summary: "High JavaScript error rate in browser"
+              description: "Browser JS errors exceed 10/min for 5 minutes. Check Faro logs for stack traces."
+
+          - uid: alert-lcp-degraded
+            title: LCP Degraded
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: P8E80F9AEF21F6940
+                model:
+                  expr: avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | json | measurement_name="LCP" | unwrap measurement_value [5m])
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [2500] }
+            noDataState: OK
+            for: 10m
+            labels:
+              severity: warning
+              category: browser
+            annotations:
+              summary: "LCP degraded to {{ $values.B }}ms"
+              description: "Largest Contentful Paint exceeds 2500ms. Page loading is slow for users."
+
+          - uid: alert-lcp-critical
+            title: LCP Critical
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: P8E80F9AEF21F6940
+                model:
+                  expr: avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | json | measurement_name="LCP" | unwrap measurement_value [5m])
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 600, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [4000] }
+            noDataState: OK
+            for: 5m
+            labels:
+              severity: critical
+              category: browser
+            annotations:
+              summary: "LCP critical at {{ $values.B }}ms"
+              description: "Largest Contentful Paint exceeds 4000ms. Users are experiencing very poor load times."
+
+          # ── Synthetic Tests ────────────────────────────────────────
+          - uid: alert-endpoint-down
+            title: Endpoint Down (Blackbox Probe)
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 300, to: 0 }
+                datasourceUid: PBFA97CFB590B2093
+                model:
+                  expr: probe_success{job=~"blackbox-http|blackbox-tcp"} >= 0
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 300, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: lt, params: [1] }
+            noDataState: Alerting
+            for: 2m
+            labels:
+              severity: critical
+              category: synthetic
+            annotations:
+              summary: "Endpoint down: {{ $labels.instance }}"
+              description: "Blackbox probe failed for {{ $labels.instance }}. Service may be unreachable."
+
+          - uid: alert-synthetic-test-failing
+            title: Synthetic Test Failing
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 900, to: 0 }
+                datasourceUid: PBFA97CFB590B2093
+                model:
+                  expr: synthetic_test_success >= 0
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 900, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: lt, params: [1] }
+            noDataState: OK
+            for: 10m
+            labels:
+              severity: critical
+              category: synthetic
+            annotations:
+              summary: "Synthetic test failing: {{ $labels.test }}"
+              description: "Playwright test {{ $labels.test }} has been failing for 10 minutes (2+ consecutive failures)."
+
+          - uid: alert-synthetic-test-slow
+            title: Synthetic Test Slow
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange: { from: 900, to: 0 }
+                datasourceUid: PBFA97CFB590B2093
+                model:
+                  expr: synthetic_test_duration_seconds >= 0
+                  instant: false
+                  range: true
+              - refId: B
+                relativeTimeRange: { from: 900, to: 0 }
+                datasourceUid: __expr__
+                model:
+                  type: reduce
+                  expression: A
+                  reducer: last
+                  settings:
+                    mode: dropNN
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [10] }
+            noDataState: OK
+            for: 15m
+            labels:
+              severity: warning
+              category: synthetic
+            annotations:
+              summary: "Synthetic test slow: {{ $labels.test }} at {{ $values.B }}s"
+              description: "Playwright test {{ $labels.test }} taking over 10 seconds for 15 minutes."
+
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -784,7 +1002,9 @@ data:
       "refresh": "10s", "time": { "from": "now-1h", "to": "now" },
       "links": [
         { "title": "K8s Cluster (HPA, OOM, Restarts)", "type": "link", "url": "/d/retail-k8s-cluster", "icon": "external link", "tooltip": "View HPA status, OOM kills, resource governance", "targetBlank": false },
-        { "title": "Dragonfly Cache", "type": "link", "url": "/d/retail-dragonfly", "icon": "external link", "tooltip": "View cache hit rates, memory, evictions", "targetBlank": false }
+        { "title": "Dragonfly Cache", "type": "link", "url": "/d/retail-dragonfly", "icon": "external link", "tooltip": "View cache hit rates, memory, evictions", "targetBlank": false },
+        { "title": "Browser RUM", "type": "link", "url": "/d/retail-browser-rum", "icon": "external link", "tooltip": "Web Vitals, JS errors, browser traces", "targetBlank": false },
+        { "title": "Synthetic Tests", "type": "link", "url": "/d/retail-synthetic", "icon": "external link", "tooltip": "Endpoint health probes, Playwright test results", "targetBlank": false }
       ],
       "templating": { "list": [{ "name": "service", "label": "Service", "type": "custom",
         "query": "All : .+,user-service : user-service,order-service : order-service,payment-service : payment-service,inventory-service : inventory-service",
@@ -1463,6 +1683,10 @@ data:
       "title": "Retail Platform - Frontend Performance",
       "tags": ["retail", "frontend", "nextjs"], "timezone": "browser",
       "refresh": "10s", "time": { "from": "now-1h", "to": "now" },
+      "links": [
+        { "title": "Browser RUM (Client-Side)", "type": "link", "url": "/d/retail-browser-rum", "icon": "external link", "targetBlank": false },
+        { "title": "Synthetic Tests", "type": "link", "url": "/d/retail-synthetic", "icon": "external link", "targetBlank": false }
+      ],
       "panels": [
         { "id": 1, "title": "Frontend Request Rate (via Istio)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
@@ -1537,6 +1761,195 @@ data:
         { "id": 7, "title": "Evicted Keys/sec", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
           "targets": [{ "expr": "rate(dragonfly_evicted_keys_total{job=\"dragonfly\"}[1m])", "legendFormat": "evictions/s" }] }
+      ]
+    }
+
+  browser-rum.json: |
+    {
+      "id": null, "uid": "retail-browser-rum",
+      "title": "Retail Platform - Browser RUM",
+      "tags": ["retail", "rum", "browser", "faro"], "timezone": "browser",
+      "refresh": "30s", "time": { "from": "now-1h", "to": "now" },
+      "templating": { "list": [{ "name": "route", "label": "Route", "type": "custom",
+        "query": "All : .+,/ : ^/$,/products : /products,/login : /login,/register : /register,/cart : /cart,/checkout : /checkout,/orders : /orders,/profile : /profile",
+        "current": { "text": "All", "value": ".+" },
+        "options": [
+          { "text": "All", "value": ".+", "selected": true },
+          { "text": "/", "value": "^/$", "selected": false },
+          { "text": "/products", "value": "/products", "selected": false },
+          { "text": "/login", "value": "/login", "selected": false },
+          { "text": "/cart", "value": "/cart", "selected": false },
+          { "text": "/checkout", "value": "/checkout", "selected": false },
+          { "text": "/orders", "value": "/orders", "selected": false }
+        ] }] },
+      "links": [
+        { "title": "Frontend Performance (Server-Side)", "type": "link", "url": "/d/retail-frontend", "icon": "external link", "targetBlank": false },
+        { "title": "Synthetic Tests", "type": "link", "url": "/d/retail-synthetic", "icon": "external link", "targetBlank": false }
+      ],
+      "panels": [
+        { "id": 1, "title": "LCP (ms)", "type": "stat", "description": "Largest Contentful Paint - measures loading performance. Good: <2500ms.",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [5m])", "legendFormat": "LCP" }],
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2500}, {"color": "red", "value": 4000}] } } } },
+        { "id": 2, "title": "FCP (ms)", "type": "stat", "description": "First Contentful Paint. Good: <1800ms.",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"FCP\" | unwrap measurement_value [5m])", "legendFormat": "FCP" }],
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1800}, {"color": "red", "value": 3000}] } } } },
+        { "id": 3, "title": "CLS", "type": "stat", "description": "Cumulative Layout Shift. Good: <0.1.",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"CLS\" | unwrap measurement_value [5m])", "legendFormat": "CLS" }],
+          "fieldConfig": { "defaults": { "decimals": 3, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}] } } } },
+        { "id": 4, "title": "INP (ms)", "type": "stat", "description": "Interaction to Next Paint. Good: <200ms.",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"INP\" | unwrap measurement_value [5m])", "legendFormat": "INP" }],
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 200}, {"color": "red", "value": 500}] } } } },
+        { "id": 5, "title": "TTFB (ms)", "type": "stat", "description": "Time to First Byte. Good: <800ms.",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"TTFB\" | unwrap measurement_value [5m])", "legendFormat": "TTFB" }],
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 800}, {"color": "red", "value": 1800}] } } } },
+        { "id": 6, "title": "JS Errors (5m)", "type": "stat", "description": "JavaScript errors captured by Faro in the last 5 minutes.",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "count_over_time({app=\"frontend\", kind=\"exception\"} [5m])", "legendFormat": "errors" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}] } } } },
+        { "id": 7, "title": "Web Vitals Over Time", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [1m])", "legendFormat": "LCP" },
+            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"FCP\" | unwrap measurement_value [1m])", "legendFormat": "FCP" },
+            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"TTFB\" | unwrap measurement_value [1m])", "legendFormat": "TTFB" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } } },
+        { "id": 8, "title": "JS Errors Over Time", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "count_over_time({app=\"frontend\", kind=\"exception\"} [1m])", "legendFormat": "errors/min" }
+          ],
+          "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } } },
+        { "id": 9, "title": "Page Load Duration by Route", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [1m]) by (page_url)", "legendFormat": "{{page_url}}" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } } },
+        { "id": 10, "title": "Browser-to-Server Request Latency", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"resource\"} | json | unwrap measurement_value [1m])", "legendFormat": "fetch latency" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } } },
+        { "id": 11, "title": "Browser Errors Log", "type": "logs",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+          "datasource": "Loki",
+          "targets": [{ "expr": "{app=\"frontend\", kind=~\"exception|error\"}", "legendFormat": "" }],
+          "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "enableLogDetails": true } }
+      ]
+    }
+
+  synthetic-tests.json: |
+    {
+      "id": null, "uid": "retail-synthetic",
+      "title": "Retail Platform - Synthetic Tests",
+      "tags": ["retail", "synthetic", "blackbox", "playwright"], "timezone": "browser",
+      "refresh": "30s", "time": { "from": "now-1h", "to": "now" },
+      "templating": { "list": [{ "name": "test", "label": "Test", "type": "custom",
+        "query": "All : .+,homepage_loads_and_shows_products : homepage_loads_and_shows_products,product_detail_page_loads : product_detail_page_loads,login_page_renders_form : login_page_renders_form,register_page_renders_form : register_page_renders_form,cart_page_loads : cart_page_loads",
+        "current": { "text": "All", "value": ".+" },
+        "options": [
+          { "text": "All", "value": ".+", "selected": true },
+          { "text": "Homepage", "value": "homepage_loads_and_shows_products", "selected": false },
+          { "text": "Product Detail", "value": "product_detail_page_loads", "selected": false },
+          { "text": "Login", "value": "login_page_renders_form", "selected": false },
+          { "text": "Register", "value": "register_page_renders_form", "selected": false },
+          { "text": "Cart", "value": "cart_page_loads", "selected": false }
+        ] }] },
+      "links": [
+        { "title": "Browser RUM", "type": "link", "url": "/d/retail-browser-rum", "icon": "external link", "targetBlank": false },
+        { "title": "K8s Cluster", "type": "link", "url": "/d/retail-k8s-cluster", "icon": "external link", "targetBlank": false }
+      ],
+      "panels": [
+        { "id": 1, "title": "Frontend", "type": "stat", "description": "HTTP probe: frontend homepage via ingress",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-http\", service=\"frontend\"}", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 2, "title": "Products API", "type": "stat", "description": "HTTP probe: /api/products via ingress",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-http\", service=\"inventory-service\"}", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 3, "title": "Kafka (TCP)", "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-tcp\", instance=~\".*kafka.*\"}", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 4, "title": "Postgres (TCP)", "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-tcp\", instance=~\".*postgres.*\"}", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 5, "title": "Dragonfly (TCP)", "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-tcp\", instance=~\".*dragonfly.*\"}", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 6, "title": "All Probes", "type": "stat", "description": "Minimum of all probe results",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+          "targets": [{ "expr": "min(probe_success{job=~\"blackbox-http|blackbox-tcp\"})", "legendFormat": "", "instant": true }],
+          "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "ISSUE", "color": "red" }, "1": { "text": "ALL UP", "color": "green" } } }], "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] } } } },
+        { "id": 7, "title": "Endpoint Response Time (HTTP Probes)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "targets": [{ "expr": "probe_duration_seconds{job=\"blackbox-http\"}", "legendFormat": "{{instance}}" }],
+          "fieldConfig": { "defaults": { "unit": "s" } } },
+        { "id": 8, "title": "TCP Probe Duration", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "targets": [{ "expr": "probe_duration_seconds{job=\"blackbox-tcp\"}", "legendFormat": "{{instance}}" }],
+          "fieldConfig": { "defaults": { "unit": "s" } } },
+        { "id": 9, "title": "Synthetic Test Pass/Fail", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "targets": [{ "expr": "synthetic_test_success{test=~\"${test}\"}", "legendFormat": "{{test}}" }],
+          "fieldConfig": { "defaults": { "min": 0, "max": 1, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}] }, "custom": { "fillOpacity": 20 } } } },
+        { "id": 10, "title": "Synthetic Test Duration (seconds)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "targets": [{ "expr": "synthetic_test_duration_seconds{test=~\"${test}\"}", "legendFormat": "{{test}}" }],
+          "fieldConfig": { "defaults": { "unit": "s" } } },
+        { "id": 11, "title": "Synthetic Test Status", "type": "table",
+          "description": "Current status of all synthetic tests.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+          "fieldConfig": { "defaults": { "custom": { "filterable": true } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Status" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "FAIL", "color": "red" }, "1": { "text": "PASS", "color": "green" } } }] }, { "id": "custom.displayMode", "value": "color-background" }] }
+            ] },
+          "targets": [
+            { "expr": "synthetic_test_success", "legendFormat": "", "format": "table", "instant": true, "refId": "A" },
+            { "expr": "synthetic_test_duration_seconds", "legendFormat": "", "format": "table", "instant": true, "refId": "B" },
+            { "expr": "synthetic_test_last_run_timestamp", "legendFormat": "", "format": "table", "instant": true, "refId": "C" }
+          ],
+          "transformations": [
+            { "id": "seriesToColumns", "options": { "byField": "test" } },
+            { "id": "organize", "options": {
+              "excludeByName": { "Time 1": true, "Time 2": true, "Time 3": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "exported_job 1": true, "exported_job 2": true, "exported_job 3": true, "instance 1": true, "instance 2": true, "instance 3": true, "job 1": true, "job 2": true, "job 3": true },
+              "renameByName": { "test": "Test", "Value #A": "Status", "Value #B": "Duration (s)", "Value #C": "Last Run" },
+              "indexByName": { "Test": 0, "Status": 1, "Duration (s)": 2, "Last Run": 3 }
+            } }
+          ] },
+        { "id": 12, "title": "Probe HTTP Status Codes", "type": "table",
+          "description": "HTTP status codes returned by blackbox probes.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+          "fieldConfig": { "defaults": { "custom": { "filterable": true } } },
+          "targets": [
+            { "expr": "probe_http_status_code{job=\"blackbox-http\"}", "legendFormat": "", "format": "table", "instant": true }
+          ],
+          "transformations": [
+            { "id": "organize", "options": {
+              "excludeByName": { "Time": true, "__name__": true, "job": true },
+              "renameByName": { "instance": "Endpoint", "Value": "HTTP Status" }
+            } }
+          ] }
       ]
     }
 

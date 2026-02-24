@@ -74,6 +74,18 @@ spec:
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
 metadata:
+  name: alloy-dr
+  namespace: retail-app
+spec:
+  host: alloy.retail-observe.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
   name: user-service-dr
   namespace: retail-app
 spec:

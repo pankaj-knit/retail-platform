@@ -161,6 +161,56 @@ data:
             action: replace
             target_label: app
 
+      # Blackbox Exporter: HTTP endpoint probes (Tier 1 synthetic monitoring)
+      # Uses Istio ingress gateway for retail-app services (mTLS bypass)
+      - job_name: 'blackbox-http'
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+              - http://istio-ingressgateway.istio-system.svc.cluster.local/
+            labels:
+              service: frontend
+          - targets:
+              - http://istio-ingressgateway.istio-system.svc.cluster.local/api/products
+            labels:
+              service: inventory-service
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - source_labels: [service]
+            target_label: service
+          - target_label: __address__
+            replacement: blackbox-exporter.retail-observe.svc.cluster.local:9115
+
+      # Blackbox Exporter: TCP connectivity probes (data-layer health)
+      - job_name: 'blackbox-tcp'
+        metrics_path: /probe
+        params:
+          module: [tcp_connect]
+        static_configs:
+          - targets:
+              - kafka.retail-data.svc.cluster.local:9092
+              - postgres.retail-data.svc.cluster.local:5432
+              - dragonfly.retail-data.svc.cluster.local:6379
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter.retail-observe.svc.cluster.local:9115
+
+      # Prometheus Pushgateway: synthetic test results (Tier 2)
+      - job_name: 'pushgateway'
+        honor_labels: true
+        static_configs:
+          - targets:
+              - pushgateway.retail-observe.svc.cluster.local:9091
+
 ---
 apiVersion: v1
 kind: ServiceAccount

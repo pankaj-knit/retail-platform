@@ -31,6 +31,7 @@ SERVICES=(
     "payment-service:services/payment-service"
     "inventory-service:services/inventory-service"
     "frontend:frontend"
+    "synthetic-tests:tests/synthetic"
 )
 
 build_and_load() {

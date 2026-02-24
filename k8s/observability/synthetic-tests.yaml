@@ -1,0 +1,51 @@
+# =============================================================================
+# Playwright Synthetic Tests CronJob (Tier 2 Synthetic Monitoring)
+# =============================================================================
+# Runs browser-based user journey tests every 5 minutes against the frontend.
+# Results are pushed to Prometheus Pushgateway for dashboarding and alerting.
+#
+# Tests:
+#   - Homepage loads with products
+#   - Product detail page navigation
+#   - Login page form renders
+#   - Register page form renders
+#   - Cart page loads
+# =============================================================================
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: synthetic-tests
+  namespace: retail-observe
+  labels:
+    app: synthetic-tests
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app: synthetic-tests
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: playwright
+              image: synthetic-tests:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: BASE_URL
+                  value: "http://istio-ingressgateway.istio-system.svc.cluster.local"
+                - name: PUSHGATEWAY_URL
+                  value: "http://pushgateway.retail-observe.svc.cluster.local:9091"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 512Mi

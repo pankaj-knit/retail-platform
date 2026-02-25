@@ -4,11 +4,11 @@
 # Observability tools need to:
 #   - Receive telemetry from retail-app (metrics, traces, logs)
 #   - Serve UIs to external users (Grafana, Jaeger, Prometheus)
-#   - Communicate internally (Grafana → Prometheus, Promtail → Loki)
+#   - Communicate internally (Grafana → Prometheus, OTel Collector → Loki)
 # =============================================================================
 
 ---
-# OTel Collector: receives from retail-app, sends to Jaeger/Prometheus
+# OTel Collector: receives from retail-app + Alloy, sends to Jaeger/Loki/Prometheus
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -38,6 +38,13 @@ spec:
               app: jaeger
       ports:
         - port: 4318
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - port: 3100
           protocol: TCP
     - to:
         - namespaceSelector: {}
@@ -93,7 +100,7 @@ spec:
     - {}
 
 ---
-# Loki: receives logs from Promtail, serves queries to Grafana
+# Loki: receives sampled logs from OTel Collector, serves queries to Grafana
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -109,25 +116,6 @@ spec:
     - ports:
         - port: 3100
           protocol: TCP
-
----
-# Promtail: needs egress to Loki + K8s API server.
-# The K8s API server ClusterIP (10.96.0.1) is not a pod, so
-# namespaceSelector/podSelector won't match it. We use an open
-# egress rule since Promtail is a trusted observability DaemonSet.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: promtail-netpol
-  namespace: retail-observe
-spec:
-  podSelector:
-    matchLabels:
-      app: promtail
-  policyTypes:
-    - Egress
-  egress:
-    - {}
 
 ---
 # Grafana: needs egress to Prometheus, Jaeger, Loki, Vault, and external SMTP/webhooks
@@ -220,13 +208,6 @@ spec:
         - port: 12345
           protocol: TCP
   egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: loki
-      ports:
-        - port: 3100
-          protocol: TCP
     - to:
         - podSelector:
             matchLabels:

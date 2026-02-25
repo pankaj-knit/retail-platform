@@ -1,29 +1,34 @@
 # =============================================================================
-# OpenTelemetry Collector
+# OpenTelemetry Collector - Centralized Telemetry Pipeline
 # =============================================================================
 #
-# The OTel Collector is the central telemetry pipeline:
+# The OTel Collector is the single entry point for all telemetry:
 #
-#   Services (metrics/traces/logs)
-#       │
-#       ▼
-#   ┌──────────────────────────┐
-#   │  OTel Collector          │
-#   │  ┌──────────┐           │
-#   │  │ Receivers │ ← OTLP, Prometheus, Zipkin
-#   │  └────┬─────┘           │
-#   │       ▼                 │
-#   │  ┌──────────┐           │
-#   │  │Processors│ ← batch, filter, transform
-#   │  └────┬─────┘           │
-#   │       ▼                 │
-#   │  ┌──────────┐           │
-#   │  │ Exporters│ → Jaeger, Prometheus, Loki
-#   │  └──────────┘           │
-#   └──────────────────────────┘
+#   Spring Apps ──(OTLP)──┐
+#   Alloy/Faro ──(OTLP)──┤
+#   Next.js SSR ─(OTLP)──┤
+#                         ▼
+#   ┌──────────────────────────────────────────────────────┐
+#   │  OTel Collector                                      │
+#   │                                                      │
+#   │  Receivers: OTLP (gRPC + HTTP), Zipkin               │
+#   │       │                                              │
+#   │       ▼                                              │
+#   │  Processors:                                         │
+#   │    Traces  → tail_sampling (100% errors,             │
+#   │              100% order-service, 10% rest)           │
+#   │    Logs    → severity filter + probabilistic         │
+#   │              (100% errors, 10% non-errors)           │
+#   │    Metrics → batch                                   │
+#   │       │                                              │
+#   │       ▼                                              │
+#   │  Exporters: Jaeger (traces), Loki (logs),            │
+#   │             Prometheus (metrics)                     │
+#   └──────────────────────────────────────────────────────┘
 #
-# Why use a collector instead of sending directly to Jaeger/Prometheus?
+# Why use a collector instead of sending directly to backends?
 #   - Single endpoint for all telemetry (apps only need one address)
+#   - Centralized sampling: change rules without redeploying apps
 #   - Can transform, filter, batch data before forwarding
 #   - Swap backends without changing application code
 #   - Reduces connections from N services to 1 collector
@@ -59,12 +64,71 @@ data:
 
       memory_limiter:
         check_interval: 5s
-        limit_mib: 256
-        spike_limit_mib: 64
+        limit_mib: 512
+        spike_limit_mib: 128
+
+      # ── Adaptive Trace Sampling ──
+      # Buffers complete traces and decides what to keep:
+      #   Policy 1: Keep 100% of traces with ERROR status
+      #   Policy 2: Keep 100% of order-service traces
+      #   Policy 3: Keep 10% of everything else
+      # A trace is kept if ANY policy says "sample".
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-order-service
+            type: string_attribute
+            string_attribute:
+              key: service.name
+              values: [order-service]
+          - name: sample-rest
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 10
+
+      # ── Log Severity Normalization ──
+      # Safety net: ensures severity_number is set from severity_text
+      # so the filter processors can reliably compare numeric values.
+      # Severity scale: TRACE=1, DEBUG=5, INFO=9, WARN=13, ERROR=17, FATAL=21
+      transform/normalize_severity:
+        log_statements:
+          - context: log
+            statements:
+              - set(severity_number, 21) where severity_text == "FATAL"
+              - set(severity_number, 17) where severity_text == "ERROR"
+              - set(severity_number, 13) where severity_text == "WARN"
+              - set(severity_number, 9) where severity_text == "INFO"
+              - set(severity_number, 5) where severity_text == "DEBUG"
+              - set(severity_number, 1) where severity_text == "TRACE"
+
+      # ── Log Sampling Filters ──
+      # Two pipelines split logs by severity, then sample non-errors.
+      # filter/keep_errors:   drop when severity_number < 17  → keeps ERROR+
+      # filter/keep_non_errors: drop when severity_number >= 17 → keeps below ERROR
+      filter/keep_errors:
+        logs:
+          log_record:
+            - 'severity_number < 17'
+
+      filter/keep_non_errors:
+        logs:
+          log_record:
+            - 'severity_number >= 17'
+
+      probabilistic_sampler/non_errors_10pct:
+        sampling_percentage: 10
 
     exporters:
       otlphttp/jaeger:
         endpoint: http://jaeger.retail-observe.svc.cluster.local:4318
+
+      loki:
+        endpoint: http://loki.retail-observe.svc.cluster.local:3100/loki/api/v1/push
 
       prometheus:
         endpoint: 0.0.0.0:8889
@@ -79,12 +143,25 @@ data:
       pipelines:
         traces:
           receivers: [otlp, zipkin]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, tail_sampling, batch]
           exporters: [otlphttp/jaeger, debug]
+
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, batch]
           exporters: [prometheus, debug]
+
+        # 100% of error logs (severity >= 17)
+        logs/errors:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/normalize_severity, filter/keep_errors, batch]
+          exporters: [loki]
+
+        # 10% of non-error logs
+        logs/non_errors_sampled:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/normalize_severity, filter/keep_non_errors, probabilistic_sampler/non_errors_10pct, batch]
+          exporters: [loki]
 
 ---
 apiVersion: apps/v1
@@ -122,11 +199,11 @@ spec:
               mountPath: /etc/otel
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 200m
+              memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 1000m
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /

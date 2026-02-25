@@ -1,12 +1,14 @@
 # =============================================================================
 # Grafana Alloy - Faro Web SDK Receiver
 # =============================================================================
-# Receives browser telemetry from Grafana Faro Web SDK and routes:
-#   - Logs  → Loki (for Web Vitals, JS errors, console logs)
-#   - Traces → OTel Collector → Jaeger (for browser-side distributed traces)
+# Receives browser telemetry from Grafana Faro Web SDK and routes
+# ALL telemetry through the OTel Collector for centralized sampling:
+#   - Logs   → OTel Collector → (sampled) → Loki
+#   - Traces → OTel Collector → (sampled) → Jaeger
 #
 # The Faro SDK sends a custom JSON payload (not OTLP), so we need Alloy's
-# faro.receiver component to parse and split the data.
+# faro.receiver component to parse and split the data. Alloy converts
+# Faro logs to OTLP via otelcol.receiver.loki before forwarding.
 # =============================================================================
 ---
 apiVersion: v1
@@ -52,17 +54,20 @@ data:
         }
       }
 
-      forward_to = [loki.write.default.receiver]
+      forward_to = [otelcol.receiver.loki.default.receiver]
     }
 
-    // ── Forward logs to Loki ──
-    loki.write "default" {
-      endpoint {
-        url = "http://loki.retail-observe.svc.cluster.local:3100/loki/api/v1/push"
+    // ── Convert Loki-format logs to OTLP and forward to OTel Collector ──
+    // otelcol.receiver.loki accepts Loki log entries from loki.process,
+    // converts them to OTLP log records, and forwards to the OTLP exporter.
+    // The OTel Collector then applies severity-based sampling before sending to Loki.
+    otelcol.receiver.loki "default" {
+      output {
+        logs = [otelcol.exporter.otlphttp.default.input]
       }
     }
 
-    // ── Forward traces to OTel Collector ──
+    // ── Forward all telemetry (logs + traces) to OTel Collector ──
     otelcol.exporter.otlphttp "default" {
       client {
         endpoint = "http://otel-collector.retail-observe.svc.cluster.local:4318"

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- =============================================================================
+  Logback Configuration with OpenTelemetry OTLP Log Export
+  =============================================================================
+  Two appenders:
+    1. CONSOLE  - stdout (for local dev and container log collection)
+    2. OTEL     - sends structured logs via OTLP to the OTel Collector,
+                  which applies severity-based sampling before forwarding to Loki.
+
+  The OTEL appender automatically:
+    - Maps Logback levels (INFO, ERROR, etc.) to OTel severity_number
+    - Attaches trace_id and span_id from the current trace context
+    - Includes MDC entries and Logback key-value pairs as log attributes
+  ============================================================================= -->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="OTEL"
+              class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <captureExperimentalAttributes>true</captureExperimentalAttributes>
+        <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="OTEL" />
+    </root>
+
+</configuration>

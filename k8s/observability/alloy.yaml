@@ -18,6 +18,11 @@ data:
   config.alloy: |
     // ── Faro receiver: accepts browser telemetry on /collect ──
     faro.receiver "default" {
+      extra_log_labels = {
+        app    = "frontend",
+        source = "faro",
+      }
+
       server {
         listen_address = "0.0.0.0"
         listen_port    = 12347
@@ -26,9 +31,28 @@ data:
       }
 
       output {
-        logs   = [loki.write.default.receiver]
+        logs   = [loki.process.faro.receiver]
         traces = [otelcol.exporter.otlphttp.default.input]
       }
+    }
+
+    // ── Extract kind label from logfmt body for Loki queries ──
+    loki.process "faro" {
+      stage.logfmt {
+        mapping = {
+          kind             = "",
+          measurement_type = "type",
+        }
+      }
+
+      stage.labels {
+        values = {
+          kind             = "kind",
+          measurement_type = "measurement_type",
+        }
+      }
+
+      forward_to = [loki.write.default.receiver]
     }
 
     // ── Forward logs to Loki ──

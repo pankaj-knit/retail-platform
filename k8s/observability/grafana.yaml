@@ -794,7 +794,7 @@ data:
                 relativeTimeRange: { from: 600, to: 0 }
                 datasourceUid: P8E80F9AEF21F6940
                 model:
-                  expr: avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | json | measurement_name="LCP" | unwrap measurement_value [5m])
+                  expr: avg(avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | logfmt | lcp > 0 | unwrap lcp [5m]))
                   instant: false
                   range: true
               - refId: B
@@ -830,7 +830,7 @@ data:
                 relativeTimeRange: { from: 600, to: 0 }
                 datasourceUid: P8E80F9AEF21F6940
                 model:
-                  expr: avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | json | measurement_name="LCP" | unwrap measurement_value [5m])
+                  expr: avg(avg_over_time({app="frontend", kind="measurement", measurement_type="web-vitals"} | logfmt | lcp > 0 | unwrap lcp [5m]))
                   instant: false
                   range: true
               - refId: B
@@ -1790,61 +1790,61 @@ data:
         { "id": 1, "title": "LCP (ms)", "type": "stat", "description": "Largest Contentful Paint - measures loading performance. Good: <2500ms.",
           "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [5m])", "legendFormat": "LCP" }],
+          "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]))", "legendFormat": "LCP" }],
           "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2500}, {"color": "red", "value": 4000}] } } } },
         { "id": 2, "title": "FCP (ms)", "type": "stat", "description": "First Contentful Paint. Good: <1800ms.",
           "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"FCP\" | unwrap measurement_value [5m])", "legendFormat": "FCP" }],
+          "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | fcp > 0 | unwrap fcp [5m]))", "legendFormat": "FCP" }],
           "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1800}, {"color": "red", "value": 3000}] } } } },
         { "id": 3, "title": "CLS", "type": "stat", "description": "Cumulative Layout Shift. Good: <0.1.",
           "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"CLS\" | unwrap measurement_value [5m])", "legendFormat": "CLS" }],
+          "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | cls >= 0 | unwrap cls [5m]))", "legendFormat": "CLS" }],
           "fieldConfig": { "defaults": { "decimals": 3, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}] } } } },
         { "id": 4, "title": "INP (ms)", "type": "stat", "description": "Interaction to Next Paint. Good: <200ms.",
           "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"INP\" | unwrap measurement_value [5m])", "legendFormat": "INP" }],
+          "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | inp > 0 | unwrap inp [5m]))", "legendFormat": "INP" }],
           "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 200}, {"color": "red", "value": 500}] } } } },
         { "id": 5, "title": "TTFB (ms)", "type": "stat", "description": "Time to First Byte. Good: <800ms.",
           "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"TTFB\" | unwrap measurement_value [5m])", "legendFormat": "TTFB" }],
+          "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]))", "legendFormat": "TTFB" }],
           "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 800}, {"color": "red", "value": 1800}] } } } },
         { "id": 6, "title": "JS Errors (5m)", "type": "stat", "description": "JavaScript errors captured by Faro in the last 5 minutes.",
           "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
           "datasource": "Loki",
-          "targets": [{ "expr": "count_over_time({app=\"frontend\", kind=\"exception\"} [5m])", "legendFormat": "errors" }],
+          "targets": [{ "expr": "sum(count_over_time({app=\"frontend\", kind=\"exception\"} [5m]))", "legendFormat": "errors" }],
           "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}] } } } },
         { "id": 7, "title": "Web Vitals Over Time", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
           "datasource": "Loki",
           "targets": [
-            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [1m])", "legendFormat": "LCP" },
-            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"FCP\" | unwrap measurement_value [1m])", "legendFormat": "FCP" },
-            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"TTFB\" | unwrap measurement_value [1m])", "legendFormat": "TTFB" }
+            { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]))", "legendFormat": "LCP" },
+            { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | fcp > 0 | unwrap fcp [5m]))", "legendFormat": "FCP" },
+            { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]))", "legendFormat": "TTFB" }
           ],
           "fieldConfig": { "defaults": { "unit": "ms" } } },
         { "id": 8, "title": "JS Errors Over Time", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
           "datasource": "Loki",
           "targets": [
-            { "expr": "count_over_time({app=\"frontend\", kind=\"exception\"} [1m])", "legendFormat": "errors/min" }
+            { "expr": "sum(count_over_time({app=\"frontend\", kind=\"exception\"} [5m]))", "legendFormat": "errors/5m" }
           ],
           "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } } },
         { "id": 9, "title": "Page Load Duration by Route", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
           "datasource": "Loki",
           "targets": [
-            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | json | measurement_name=\"LCP\" | unwrap measurement_value [1m]) by (page_url)", "legendFormat": "{{page_url}}" }
+            { "expr": "avg by (page_url) (avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]))", "legendFormat": "{{page_url}}" }
           ],
           "fieldConfig": { "defaults": { "unit": "ms" } } },
         { "id": 10, "title": "Browser-to-Server Request Latency", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
           "datasource": "Loki",
           "targets": [
-            { "expr": "avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"resource\"} | json | unwrap measurement_value [1m])", "legendFormat": "fetch latency" }
+            { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"event\"} | logfmt | event_name=\"faro.tracing.fetch\" | unwrap event_data_duration_ns [5m])) / 1000000", "legendFormat": "fetch latency" }
           ],
           "fieldConfig": { "defaults": { "unit": "ms" } } },
         { "id": 11, "title": "Browser Errors Log", "type": "logs",
@@ -1922,7 +1922,8 @@ data:
           "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
           "fieldConfig": { "defaults": { "custom": { "filterable": true } },
             "overrides": [
-              { "matcher": { "id": "byName", "options": "Status" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "FAIL", "color": "red" }, "1": { "text": "PASS", "color": "green" } } }] }, { "id": "custom.displayMode", "value": "color-background" }] }
+              { "matcher": { "id": "byName", "options": "Status" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "FAIL", "color": "red" }, "1": { "text": "PASS", "color": "green" } } }] }, { "id": "custom.displayMode", "value": "color-background" }] },
+              { "matcher": { "id": "byName", "options": "Last Run" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] }
             ] },
           "targets": [
             { "expr": "synthetic_test_success", "legendFormat": "", "format": "table", "instant": true, "refId": "A" },
@@ -1933,9 +1934,11 @@ data:
             { "id": "seriesToColumns", "options": { "byField": "test" } },
             { "id": "organize", "options": {
               "excludeByName": { "Time 1": true, "Time 2": true, "Time 3": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "exported_job 1": true, "exported_job 2": true, "exported_job 3": true, "instance 1": true, "instance 2": true, "instance 3": true, "job 1": true, "job 2": true, "job 3": true },
-              "renameByName": { "test": "Test", "Value #A": "Status", "Value #B": "Duration (s)", "Value #C": "Last Run" },
-              "indexByName": { "Test": 0, "Status": 1, "Duration (s)": 2, "Last Run": 3 }
-            } }
+              "renameByName": { "test": "Test", "Value #A": "Status", "Value #B": "Duration (s)", "Value #C": "Last Run (epoch)" },
+              "indexByName": { "Test": 0, "Status": 1, "Duration (s)": 2, "Last Run (epoch)": 3 }
+            } },
+            { "id": "calculateField", "options": { "alias": "Last Run", "mode": "binary", "binary": { "left": "Last Run (epoch)", "operator": "*", "right": "1000" }, "replaceFields": false } },
+            { "id": "organize", "options": { "excludeByName": { "Last Run (epoch)": true }, "indexByName": { "Test": 0, "Status": 1, "Duration (s)": 2, "Last Run": 3 } } }
           ] },
         { "id": 12, "title": "Probe HTTP Status Codes", "type": "table",
           "description": "HTTP status codes returned by blackbox probes.",

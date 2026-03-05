@@ -100,7 +100,7 @@ spec:
     - {}
 
 ---
-# Loki: receives sampled logs from OTel Collector, serves queries to Grafana
+# Loki: receives sampled backend logs from OTel Collector + RUM logs from Alloy, serves queries to Grafana
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -216,6 +216,13 @@ spec:
         - port: 4317
           protocol: TCP
         - port: 4318
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - port: 3100
           protocol: TCP
     - to:
         - namespaceSelector: {}

@@ -1,14 +1,18 @@
 # =============================================================================
 # Grafana Alloy - Faro Web SDK Receiver
 # =============================================================================
-# Receives browser telemetry from Grafana Faro Web SDK and routes
-# ALL telemetry through the OTel Collector for centralized sampling:
-#   - Logs   → OTel Collector → (sampled) → Loki
-#   - Traces → OTel Collector → (sampled) → Jaeger
+# Receives browser telemetry from Grafana Faro Web SDK and splits routing:
+#   - Logs   → Loki directly (no server-side sampling; RUM data is already
+#              client-sampled by the Faro SDK's sessionTracking.samplingRate)
+#   - Traces → OTel Collector → (tail-sampled) → Jaeger
 #
-# The Faro SDK sends a custom JSON payload (not OTLP), so we need Alloy's
-# faro.receiver component to parse and split the data. Alloy converts
-# Faro logs to OTLP via otelcol.receiver.loki before forwarding.
+# Why not route logs through the OTel Collector?
+#   The OTel Collector applies severity-based sampling (100% errors, 10% rest)
+#   designed for backend app logs. Faro logs (Web Vitals, page events) have no
+#   standard severity and would be double-sampled, destroying statistical
+#   accuracy for P95/P99 metrics. Sending directly to Loki preserves 100%
+#   of the already client-sampled RUM data and keeps Loki labels (kind,
+#   measurement_type) intact for dashboard queries.
 # =============================================================================
 ---
 apiVersion: v1
@@ -54,20 +58,17 @@ data:
         }
       }
 
-      forward_to = [otelcol.receiver.loki.default.receiver]
+      forward_to = [loki.write.default.receiver]
     }
 
-    // ── Convert Loki-format logs to OTLP and forward to OTel Collector ──
-    // otelcol.receiver.loki accepts Loki log entries from loki.process,
-    // converts them to OTLP log records, and forwards to the OTLP exporter.
-    // The OTel Collector then applies severity-based sampling before sending to Loki.
-    otelcol.receiver.loki "default" {
-      output {
-        logs = [otelcol.exporter.otlphttp.default.input]
+    // ── Write Faro logs directly to Loki (bypasses OTel Collector sampling) ──
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.retail-observe.svc.cluster.local:3100/loki/api/v1/push"
       }
     }
 
-    // ── Forward all telemetry (logs + traces) to OTel Collector ──
+    // ── Forward Faro traces to OTel Collector for tail-sampling ──
     otelcol.exporter.otlphttp "default" {
       client {
         endpoint = "http://otel-collector.retail-observe.svc.cluster.local:4318"

@@ -1,5 +1,11 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { propagation } = await import("@opentelemetry/api");
+    const { W3CTraceContextPropagator } = await import(
+      "@opentelemetry/core"
+    );
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+
     const { NodeSDK } = await import("@opentelemetry/sdk-node");
     const { OTLPTraceExporter } = await import(
       "@opentelemetry/exporter-trace-otlp-http"

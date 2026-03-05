@@ -94,7 +94,7 @@ public class InventoryService {
         });
     }
 
-    @Cacheable(value = "product", key = "#productId", sync = true)
+    @Cacheable(value = "product", keyGenerator = "productCacheKeyGenerator", sync = true)
     @Transactional(readOnly = true)
     public ProductResponse getProduct(Long productId) {
         Product product = productRepository.findById(productId)
@@ -120,7 +120,7 @@ public class InventoryService {
      * Uses the atomic reserveStock query to prevent race conditions.
      * If successful, publishes an InventoryReserved event to Kafka.
      */
-    @CacheEvict(value = "product", key = "#productId")
+    @CacheEvict(value = "product", keyGenerator = "productCacheKeyGenerator")
     @Transactional
     public boolean reserveStock(Long orderId, Long productId, int quantity) {
         int updated = inventoryRepository.reserveStock(productId, quantity);
@@ -141,7 +141,7 @@ public class InventoryService {
      * Confirm stock deduction after successful payment.
      * Called when "payment-completed" event is received from Kafka.
      */
-    @CacheEvict(value = "product", key = "#productId")
+    @CacheEvict(value = "product", keyGenerator = "productCacheKeyGenerator")
     @Transactional
     public void confirmDeduction(Long productId, int quantity) {
         int updated = inventoryRepository.confirmStockDeduction(productId, quantity);
@@ -157,7 +157,7 @@ public class InventoryService {
      * Release reserved stock after failed payment or order cancellation.
      * Called when "payment-failed" event is received from Kafka.
      */
-    @CacheEvict(value = "product", key = "#productId")
+    @CacheEvict(value = "product", keyGenerator = "productCacheKeyGenerator")
     @Transactional
     public void releaseReservation(Long productId, int quantity) {
         int updated = inventoryRepository.releaseStock(productId, quantity);

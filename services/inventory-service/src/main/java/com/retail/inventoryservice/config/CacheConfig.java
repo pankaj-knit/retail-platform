@@ -1,9 +1,10 @@
 package com.retail.inventoryservice.config;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Expiry;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.cache.support.CompositeCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -14,9 +15,13 @@ import org.springframework.data.redis.serializer.GenericJacksonJsonRedisSerializ
 import org.springframework.data.redis.serializer.RedisSerializationContext.SerializationPair;
 
 import java.time.Duration;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Configuration
 public class CacheConfig {
+
+    private static final long BASE_TTL_NANOS = Duration.ofSeconds(5).toNanos();
+    private static final long JITTER_NANOS = Duration.ofMillis(2000).toNanos();
 
     @Bean
     public RedisCacheManager redisCacheManager(RedisConnectionFactory redisConnectionFactory) {
@@ -32,14 +37,35 @@ public class CacheConfig {
     }
 
     @Bean
-    @Primary
-    public CacheManager cacheManager(RedisCacheManager redisCacheManager) {
-        CaffeineCacheManager l1 = new CaffeineCacheManager("product");
-        l1.setCaffeine(Caffeine.newBuilder()
+    public CaffeineCacheManager caffeineCacheManager() {
+        CaffeineCacheManager manager = new CaffeineCacheManager("product");
+        manager.setCaffeine(Caffeine.newBuilder()
                 .maximumSize(1000)
-                .expireAfterWrite(Duration.ofSeconds(5))
-                .recordStats());
+                .expireAfter(new Expiry<Object, Object>() {
+                    @Override
+                    public long expireAfterCreate(Object key, Object value, long currentTime) {
+                        return BASE_TTL_NANOS + ThreadLocalRandom.current().nextLong(0, JITTER_NANOS);
+                    }
 
-        return new CompositeCacheManager(l1, redisCacheManager);
+                    @Override
+                    public long expireAfterUpdate(Object key, Object value, long currentTime, long currentDuration) {
+                        return currentDuration;
+                    }
+
+                    @Override
+                    public long expireAfterRead(Object key, Object value, long currentTime, long currentDuration) {
+                        return currentDuration;
+                    }
+                })
+                .recordStats());
+        return manager;
+    }
+
+    @Bean
+    @Primary
+    public CacheManager cacheManager(CaffeineCacheManager caffeineCacheManager,
+                                    RedisCacheManager redisCacheManager,
+                                    MeterRegistry meterRegistry) {
+        return new TieredCacheManager(caffeineCacheManager, redisCacheManager, meterRegistry);
     }
 }

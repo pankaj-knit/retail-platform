@@ -44,22 +44,52 @@ data:
     datasources:
       - name: Prometheus
         type: prometheus
+        uid: prometheus
         access: proxy
         url: http://prometheus.retail-observe.svc.cluster.local:9090
         isDefault: true
         editable: false
+        jsonData:
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: jaeger
 
       - name: Jaeger
         type: jaeger
+        uid: jaeger
         access: proxy
         url: http://jaeger.retail-observe.svc.cluster.local:16686
         editable: false
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            filterBySpanID: false
+          tracesToMetrics:
+            datasourceUid: prometheus
+            queries:
+              - name: Request rate
+                query: 'rate(http_server_requests_seconds_count{app="$${__span.tags["service.name"]}"}[5m])'
+              - name: Error rate
+                query: 'rate(http_server_requests_seconds_count{app="$${__span.tags["service.name"]}",outcome="SERVER_ERROR"}[5m])'
+              - name: P95 latency
+                query: 'histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{app="$${__span.tags["service.name"]}"}[5m]))'
+          nodeGraph:
+            enabled: true
 
       - name: Loki
         type: loki
+        uid: loki
         access: proxy
         url: http://loki.retail-observe.svc.cluster.local:3100
         editable: false
+        jsonData:
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '(?:trace_id|traceId|traceID)[=:" ]*(\w{32})'
+              url: '$${__value.raw}'
+              datasourceUid: jaeger
+              matcherType: regex
 
 ---
 # Alerting contact points — Teams webhook + Email
@@ -1003,14 +1033,15 @@ data:
       "links": [
         { "title": "K8s Cluster (HPA, OOM, Restarts)", "type": "link", "url": "/d/retail-k8s-cluster", "icon": "external link", "tooltip": "View HPA status, OOM kills, resource governance", "targetBlank": false },
         { "title": "Dragonfly Cache", "type": "link", "url": "/d/retail-dragonfly", "icon": "external link", "tooltip": "View cache hit rates, memory, evictions", "targetBlank": false },
+        { "title": "Cache Observability (L1/L2)", "type": "link", "url": "/d/retail-cache-observability", "icon": "external link", "tooltip": "Cache hit ratio, DB fallback, invalidation, logs & traces", "targetBlank": false },
         { "title": "Browser RUM", "type": "link", "url": "/d/retail-browser-rum", "icon": "external link", "tooltip": "Web Vitals, JS errors, browser traces", "targetBlank": false },
         { "title": "Synthetic Tests", "type": "link", "url": "/d/retail-synthetic", "icon": "external link", "tooltip": "Endpoint health probes, Playwright test results", "targetBlank": false }
       ],
       "templating": { "list": [{ "name": "service", "label": "Service", "type": "custom",
-        "query": "All : .+,user-service : user-service,order-service : order-service,payment-service : payment-service,inventory-service : inventory-service",
-        "current": { "text": "All", "value": ".+" },
+        "query": "All : user-service|order-service|payment-service|inventory-service,user-service : user-service,order-service : order-service,payment-service : payment-service,inventory-service : inventory-service",
+        "current": { "text": "All", "value": "user-service|order-service|payment-service|inventory-service" },
         "options": [
-          { "text": "All", "value": ".+", "selected": true },
+          { "text": "All", "value": "user-service|order-service|payment-service|inventory-service", "selected": true },
           { "text": "user-service", "value": "user-service", "selected": false },
           { "text": "order-service", "value": "order-service", "selected": false },
           { "text": "payment-service", "value": "payment-service", "selected": false },
@@ -1028,50 +1059,81 @@ data:
       "panels": [
         { "id": 1, "title": "HTTP Request Rate (per service)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app)", "legendFormat": "{{app}}" }] },
+          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app)", "legendFormat": "{{app}}" }],
+          "fieldConfig": { "defaults": {
+            "links": [{ "title": "View traces for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.app}\"}]}", "targetBlank": true },
+                      { "title": "View logs for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.app}\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 2, "title": "HTTP Error Rate (5xx)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\", status=~\"5..\"}[5m])) by (app)", "legendFormat": "{{app}}" }] },
+          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\", status=~\"5..\"}[5m])) by (app)", "legendFormat": "{{app}}" }],
+          "fieldConfig": { "defaults": {
+            "links": [{ "title": "View error traces for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.app}\",\"tags\":\"error=true\"}]}", "targetBlank": true },
+                      { "title": "View error logs for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.app}\\\"} |= \\\"ERROR\\\"\" }]}", "targetBlank": true }]
+          } } },
         { "id": 3, "title": "HTTP Avg Latency / Max Latency (ms)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
           "targets": [
             { "expr": "sum(rate(http_server_requests_seconds_sum{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app) / sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app) * 1000", "legendFormat": "avg {{app}}" },
             { "expr": "max(http_server_requests_seconds_max{namespace=\"retail-app\", app=~\"${service}\"}) by (app) * 1000", "legendFormat": "max {{app}}" }
-          ] },
+          ],
+          "fieldConfig": { "defaults": {
+            "links": [{ "title": "View traces for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.app}\"}]}", "targetBlank": true },
+                      { "title": "View logs for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.app}\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 4, "title": "HTTP 4xx Client Errors", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\", status=~\"4..\"}[5m])) by (app)", "legendFormat": "{{app}}" }] },
-        { "id": 5, "title": "Application Error Logs (logback)", "type": "timeseries",
+          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\", status=~\"4..\"}[5m])) by (app)", "legendFormat": "{{app}}" }],
+          "fieldConfig": { "defaults": {
+            "links": [{ "title": "View logs for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.app}\\\"}\"}]}", "targetBlank": true }]
+          } } },
+        { "id": 12, "title": "HTTP P50 / P95 / P99 Latency (ms)", "type": "timeseries",
+          "description": "Request latency percentiles from Istio/Envoy histograms. P50=median, P95/P99=tail latency experienced by slowest users.",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-          "targets": [{ "expr": "sum(rate(logback_events_total{namespace=\"retail-app\", app=~\"${service}\", level=\"error\"}[5m])) by (app)", "legendFormat": "{{app}}" }] },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(istio_request_duration_milliseconds_bucket{destination_workload_namespace=\"retail-app\", destination_workload=~\"${service}\"}[5m])) by (le, destination_workload))", "legendFormat": "p50 {{destination_workload}}" },
+            { "expr": "histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{destination_workload_namespace=\"retail-app\", destination_workload=~\"${service}\"}[5m])) by (le, destination_workload))", "legendFormat": "p95 {{destination_workload}}" },
+            { "expr": "histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket{destination_workload_namespace=\"retail-app\", destination_workload=~\"${service}\"}[5m])) by (le, destination_workload))", "legendFormat": "p99 {{destination_workload}}" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "View traces for ${__field.labels.destination_workload}", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.destination_workload}\"}]}", "targetBlank": true },
+                      { "title": "View logs for ${__field.labels.destination_workload}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.destination_workload}\\\"}\"}]}", "targetBlank": true }]
+          } } },
+        { "id": 5, "title": "Application Error Logs (logback)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "targets": [{ "expr": "sum(rate(logback_events_total{namespace=\"retail-app\", app=~\"${service}\", level=\"error\"}[5m])) by (app)", "legendFormat": "{{app}}" }],
+          "fieldConfig": { "defaults": {
+            "links": [{ "title": "View error logs for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"${__field.labels.app}\\\"} |= \\\"ERROR\\\"\"}]}", "targetBlank": true },
+                      { "title": "View error traces for ${__field.labels.app}", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.app}\",\"tags\":\"error=true\"}]}", "targetBlank": true }]
+          } } },
         { "id": 6, "title": "Circuit Breaker (Envoy) - Open Requests", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
           "description": "Envoy circuit breaker open state. Non-zero = circuit is open, requests being shed.",
           "targets": [
             { "expr": "sum(envoy_cluster_circuit_breakers_default_rq_open{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "rq open {{app}}" },
             { "expr": "sum(envoy_cluster_circuit_breakers_default_cx_open{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "cx open {{app}}" }
           ] },
         { "id": 7, "title": "Active HTTP Requests (in-flight)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
           "targets": [{ "expr": "sum(http_server_requests_active_seconds_count{namespace=\"retail-app\", app=~\"${service}\"}) by (app)", "legendFormat": "{{app}}" }] },
         { "id": 8, "title": "Spring Security Auth Latency (ms)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
           "targets": [{ "expr": "sum(rate(spring_security_http_secured_requests_seconds_sum{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app) / sum(rate(spring_security_http_secured_requests_seconds_count{namespace=\"retail-app\", app=~\"${service}\"}[5m])) by (app) * 1000", "legendFormat": "{{app}}" }] },
         { "id": 9, "title": "Caffeine Cache Hit Ratio %", "type": "stat",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
           "description": "Application-level in-memory cache (Caffeine). High hit ratio = fewer DB queries.",
           "targets": [{ "expr": "sum(cache_gets_total{namespace=\"retail-app\", app=~\"${service}\", result=\"hit\"}) by (app, cache) / sum(cache_gets_total{namespace=\"retail-app\", app=~\"${service}\"}) by (app, cache) * 100", "legendFormat": "{{app}} ({{cache}})" }],
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name", "graphMode": "none", "orientation": "horizontal" },
           "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "min": 0, "max": 100, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 70}, {"color": "green", "value": 90}] } } } },
         { "id": 10, "title": "Caffeine Cache Operations (rate/s)", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
           "description": "Cache get rate split by hit/miss. Sustained misses = cache not effective or TTL too short.",
           "targets": [
             { "expr": "sum(rate(cache_gets_total{namespace=\"retail-app\", app=~\"${service}\", result=\"hit\"}[5m])) by (app, cache)", "legendFormat": "hit {{app}} ({{cache}})" },
             { "expr": "sum(rate(cache_gets_total{namespace=\"retail-app\", app=~\"${service}\", result=\"miss\"}[5m])) by (app, cache)", "legendFormat": "miss {{app}} ({{cache}})" }
           ] },
         { "id": 11, "title": "Caffeine Cache Size & Evictions", "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
           "description": "Current entries vs evictions. High eviction rate = maximumSize too small.",
           "targets": [
             { "expr": "sum(cache_size{namespace=\"retail-app\", app=~\"${service}\"}) by (app, cache)", "legendFormat": "size {{app}} ({{cache}})" },
@@ -1733,6 +1795,9 @@ data:
       "title": "Retail Platform - Dragonfly Cache",
       "tags": ["retail", "dragonfly", "cache"], "timezone": "browser",
       "refresh": "10s", "time": { "from": "now-1h", "to": "now" },
+      "links": [
+        { "title": "Cache Observability (L1/L2/DB)", "type": "link", "url": "/d/retail-cache-observability", "icon": "dashboard", "tooltip": "Hit ratio by tier, DB fallback, invalidation, logs & traces", "targetBlank": false }
+      ],
       "panels": [
         { "id": 1, "title": "Memory Usage (MB)", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
@@ -1791,32 +1856,44 @@ data:
           "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]))", "legendFormat": "LCP" }],
-          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2500}, {"color": "red", "value": 4000}] } } } },
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2500}, {"color": "red", "value": 4000}] },
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 2, "title": "FCP (ms)", "type": "stat", "description": "First Contentful Paint. Good: <1800ms.",
           "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | fcp > 0 | unwrap fcp [5m]))", "legendFormat": "FCP" }],
-          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1800}, {"color": "red", "value": 3000}] } } } },
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1800}, {"color": "red", "value": 3000}] },
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 3, "title": "CLS", "type": "stat", "description": "Cumulative Layout Shift. Good: <0.1.",
           "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | cls >= 0 | unwrap cls [5m]))", "legendFormat": "CLS" }],
-          "fieldConfig": { "defaults": { "decimals": 3, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}] } } } },
+          "fieldConfig": { "defaults": { "decimals": 3, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}] },
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 4, "title": "INP (ms)", "type": "stat", "description": "Interaction to Next Paint. Good: <200ms.",
           "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | inp > 0 | unwrap inp [5m]))", "legendFormat": "INP" }],
-          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 200}, {"color": "red", "value": 500}] } } } },
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 200}, {"color": "red", "value": 500}] },
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 5, "title": "TTFB (ms)", "type": "stat", "description": "Time to First Byte. Good: <800ms.",
           "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]))", "legendFormat": "TTFB" }],
-          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 800}, {"color": "red", "value": 1800}] } } } },
+          "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 800}, {"color": "red", "value": 1800}] },
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 6, "title": "JS Errors (5m)", "type": "stat", "description": "JavaScript errors captured by Faro in the last 5 minutes.",
           "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
           "datasource": "Loki",
           "targets": [{ "expr": "sum(count_over_time({app=\"frontend\", kind=\"exception\"} [5m]))", "legendFormat": "errors" }],
-          "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}] } } } },
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}] },
+            "links": [{ "title": "View error logs in Explore", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"exception\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 7, "title": "Web Vitals Over Time", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
           "datasource": "Loki",
@@ -1825,30 +1902,68 @@ data:
             { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | fcp > 0 | unwrap fcp [5m]))", "legendFormat": "FCP" },
             { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]))", "legendFormat": "TTFB" }
           ],
-          "fieldConfig": { "defaults": { "unit": "ms" } } },
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true },
+                      { "title": "View frontend traces in Jaeger", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"frontend\"}]}", "targetBlank": true },
+                      { "title": "Frontend server-side metrics", "url": "/explore?orgId=1&left={\"datasource\":\"prometheus\",\"queries\":[{\"expr\":\"rate(http_server_requests_seconds_count{app=\\\"frontend\\\"}[5m])\"}]}", "targetBlank": true }]
+          } } },
         { "id": 8, "title": "JS Errors Over Time", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
           "datasource": "Loki",
           "targets": [
             { "expr": "sum(count_over_time({app=\"frontend\", kind=\"exception\"} [5m]))", "legendFormat": "errors/5m" }
           ],
-          "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } } },
+          "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" },
+            "links": [{ "title": "View error logs in Explore", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"exception\\\"}\"}]}", "targetBlank": true },
+                      { "title": "View frontend traces in Jaeger", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"frontend\"}]}", "targetBlank": true }]
+          } } },
         { "id": 9, "title": "Page Load Duration by Route", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
           "datasource": "Loki",
           "targets": [
             { "expr": "avg by (page_url) (avg_over_time({app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]))", "legendFormat": "{{page_url}}" }
           ],
-          "fieldConfig": { "defaults": { "unit": "ms" } } },
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true }]
+          } } },
         { "id": 10, "title": "Browser-to-Server Request Latency", "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
           "datasource": "Loki",
           "targets": [
             { "expr": "avg(avg_over_time({app=\"frontend\", kind=\"event\"} | logfmt | event_name=\"faro.tracing.fetch\" | unwrap event_data_duration_ns [5m])) / 1000000", "legendFormat": "fetch latency" }
           ],
-          "fieldConfig": { "defaults": { "unit": "ms" } } },
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "View frontend traces in Jaeger", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"frontend\"}]}", "targetBlank": true },
+                      { "title": "View fetch event logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"event\\\"}\"}]}", "targetBlank": true }]
+          } } },
+        { "id": 12, "title": "LCP P50 / P95 / P99 (ms)", "type": "timeseries",
+          "description": "Largest Contentful Paint percentiles from Faro Web Vitals. P50=median user experience, P95/P99=tail latency.",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "quantile_over_time(0.50, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]) by ()", "legendFormat": "p50" },
+            { "expr": "quantile_over_time(0.95, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]) by ()", "legendFormat": "p95" },
+            { "expr": "quantile_over_time(0.99, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | lcp > 0 | unwrap lcp [5m]) by ()", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true },
+                      { "title": "View frontend traces in Jaeger", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"frontend\"}]}", "targetBlank": true }]
+          } } },
+        { "id": 13, "title": "TTFB P50 / P95 / P99 (ms)", "type": "timeseries",
+          "description": "Time to First Byte percentiles. Reflects server response time as experienced by the browser.",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "datasource": "Loki",
+          "targets": [
+            { "expr": "quantile_over_time(0.50, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]) by ()", "legendFormat": "p50" },
+            { "expr": "quantile_over_time(0.95, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]) by ()", "legendFormat": "p95" },
+            { "expr": "quantile_over_time(0.99, {app=\"frontend\", kind=\"measurement\", measurement_type=\"web-vitals\"} | logfmt | ttfb > 0 | unwrap ttfb [5m]) by ()", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms",
+            "links": [{ "title": "Explore Web Vitals logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{app=\\\"frontend\\\", kind=\\\"measurement\\\", measurement_type=\\\"web-vitals\\\"}\"}]}", "targetBlank": true },
+                      { "title": "View frontend traces in Jaeger", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"frontend\"}]}", "targetBlank": true }]
+          } } },
         { "id": 11, "title": "Browser Errors Log", "type": "logs",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
           "datasource": "Loki",
           "targets": [{ "expr": "{app=\"frontend\", kind=~\"exception|error\"}", "legendFormat": "" }],
           "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "enableLogDetails": true } }
@@ -1953,6 +2068,182 @@ data:
               "renameByName": { "instance": "Endpoint", "Value": "HTTP Status" }
             } }
           ] }
+      ]
+    }
+
+  cache-observability.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "id": null,
+      "uid": "retail-cache-observability",
+      "title": "Cache Observability (L1 / L2 / DB)",
+      "tags": ["retail", "cache", "observability", "inventory"],
+      "timezone": "browser",
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "schemaVersion": 38,
+      "version": 1,
+      "description": "Cache hit ratio (local vs Redis), stampede/lock signals, invalidation, DB fallback rate. Use data links to drill into metrics, logs (cache key, correlation ID, region), and traces.",
+      "links": [
+        { "title": "Service Overview", "type": "link", "url": "/d/retail-overview", "icon": "dashboard", "targetBlank": false },
+        { "title": "Dragonfly (L2)", "type": "link", "url": "/d/retail-dragonfly", "icon": "external link", "targetBlank": false }
+      ],
+      "templating": {
+        "list": [
+          {
+            "name": "service",
+            "label": "Service",
+            "type": "custom",
+            "query": "inventory-service",
+            "current": { "text": "inventory-service", "value": "inventory-service" },
+            "options": [{ "text": "inventory-service", "value": "inventory-service", "selected": true }]
+          },
+          {
+            "name": "cache",
+            "label": "Cache",
+            "type": "custom",
+            "query": "product",
+            "current": { "text": "product", "value": "product" },
+            "options": [{ "text": "product", "value": "product", "selected": true }]
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Cache hit ratio (L1 vs L2 vs miss)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "description": "L1 = Caffeine (local). L2 = Dragonfly (Redis). Miss = DB fallback. Low L1+L2 hit ratio or rising miss rate indicates cache not effective or stampede.",
+          "targets": [
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"l1_hit\"}[5m])) by (app) / (sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\"}[5m])) by (app) + 1e-9) * 100", "legendFormat": "L1 hit %" },
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"l2_hit\"}[5m])) by (app) / (sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\"}[5m])) by (app) + 1e-9) * 100", "legendFormat": "L2 hit %" },
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"miss\"}[5m])) by (app) / (sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\"}[5m])) by (app) + 1e-9) * 100", "legendFormat": "Miss %" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+            "links": [
+              { "title": "View cache metrics in Explore", "url": "/explore?orgId=1&left={\"datasource\":\"prometheus\",\"queries\":[{\"expr\":\"cache_gets_total{app=\\\"${__field.labels.app}\\\"}\"}]}", "targetBlank": true },
+              { "title": "View inventory-service logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{namespace=\\\"retail-app\\\", container=\\\"${__field.labels.app}\\\"}\"}]}", "targetBlank": true },
+              { "title": "View inventory-service traces", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"${__field.labels.app}\"}]}", "targetBlank": true }
+            ]
+          } }
+        },
+        {
+          "id": 2,
+          "title": "Overall cache hit ratio %",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+          "description": "(L1 hits + L2 hits) / total gets. Target: high. Requires inventory-service with tiered cache and product traffic. If no data, check Prometheus has cache_gets_total for app.",
+          "targets": [{ "expr": "(sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=~\"l1_hit|l2_hit\"}[5m])) by (app) / (sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\"}[5m])) by (app) + 1e-9)) * 100", "legendFormat": "hit %" }],
+          "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "min": 0, "max": 100, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 70}, {"color": "green", "value": 90}] }, "links": [{ "title": "Explore cache metrics", "url": "/explore?orgId=1&left={\"datasource\":\"prometheus\",\"queries\":[{\"expr\":\"cache_gets_total{app=\\\"inventory-service\\\"}\"}]}", "targetBlank": true }] } },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "orientation": "horizontal" }
+        },
+        {
+          "id": 3,
+          "title": "DB fallback rate (cache miss rate/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+          "description": "Gets that missed both L1 and L2 and hit the DB. Spikes correlate with stampede or cold start.",
+          "targets": [{ "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"miss\"}[5m])) by (app)", "legendFormat": "miss/s {{app}}" }],
+          "fieldConfig": { "defaults": { "unit": "reqps",
+            "links": [
+              { "title": "View traces for cache miss → DB", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"inventory-service\"}]}", "targetBlank": true },
+              { "title": "View logs (cache_key, trace_id)", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"inventory-service\\\"} |~ \\\"cache|getProduct|product\\\"\"}]}", "targetBlank": true }
+            ]
+          } }
+        },
+        {
+          "id": 4,
+          "title": "Cache gets by result (L1 hit, L2 hit, miss)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "description": "Rate of cache lookups by outcome. Use to see cache miss → DB spike → invalidation lag in traces.",
+          "targets": [
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"l1_hit\"}[5m])) by (app)", "legendFormat": "L1 hit {{app}}" },
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"l2_hit\"}[5m])) by (app)", "legendFormat": "L2 hit {{app}}" },
+            { "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"miss\"}[5m])) by (app)", "legendFormat": "miss {{app}}" }
+          ],
+          "fieldConfig": { "defaults": {
+            "links": [
+              { "title": "View metrics", "url": "/explore?orgId=1&left={\"datasource\":\"prometheus\",\"queries\":[{\"expr\":\"rate(cache_gets_total{app=\\\"inventory-service\\\"}[5m])\"}]}", "targetBlank": true },
+              { "title": "View logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{namespace=\\\"retail-app\\\", container=\\\"inventory-service\\\"}\"}]}", "targetBlank": true },
+              { "title": "View traces", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"inventory-service\"}]}", "targetBlank": true }
+            ]
+          } }
+        },
+        {
+          "id": 5,
+          "title": "Stampede / lock contention (DB load proxy)",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+          "description": "Cache miss rate as proxy for DB load. Add metric cache_lock_waits_total or cache_load_duration for explicit stampede lock contention when implemented.",
+          "targets": [{ "expr": "sum(rate(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\", result=\"miss\"}[5m]))", "legendFormat": "miss/s" }],
+          "fieldConfig": { "defaults": { "unit": "reqps", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 50}] }, "links": [{ "title": "Traces (cache miss → DB)", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"inventory-service\"}]}", "targetBlank": true }] } },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+        },
+        {
+          "id": 6,
+          "title": "Invalidation (evictions/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+          "description": "Cache evictions (e.g. @CacheEvict on reserve/confirm/release). L2 evictions also in Dragonfly dashboard.",
+          "targets": [
+            { "expr": "sum(rate(cache_evictions_total{app=~\"${service}\"}[5m])) by (app, cache)", "legendFormat": "{{app}} {{cache}}" }
+          ],
+          "fieldConfig": { "defaults": {
+            "links": [
+              { "title": "Dragonfly evictions", "url": "/d/retail-dragonfly", "targetBlank": false },
+              { "title": "Logs (evict)", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{job=\\\"inventory-service\\\"} |~ \\\"evict|cache|reserve|confirm|release\\\"\"}]}", "targetBlank": true }
+            ]
+          } }
+        },
+        {
+          "id": 7,
+          "title": "Invalidation propagation latency",
+          "type": "text",
+          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 16 },
+          "description": "Single-region: eviction is local (L1+L2) so propagation is immediate. For multi-region, add metric: time from write to last region evicted, and link to traces.",
+          "options": { "content": "**Single-region:** Eviction is synchronous (L1 + L2 evicted in same request). No propagation latency.\n\n**Multi-region:** Add a metric (e.g. cache_invalidation_latency_seconds) and a panel here. Use traces to debug \"cache miss → DB spike → invalidation lag\".", "mode": "markdown" }
+        },
+        {
+          "id": 8,
+          "title": "Cache-related logs (cache_key, correlation ID, region)",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
+          "description": "Logs from OTLP use job=<service>. If no data, check Loki has logs for inventory-service. Ensure app logs include cache key, trace_id, region. Click trace_id to jump to Jaeger.",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "targets": [
+            { "expr": "{job=~\"${service}\"} |~ \"cache|getProduct|product|evict|reserve|confirm|release\"", "legendFormat": "" },
+            { "expr": "{namespace=\"retail-app\", container=~\"${service}\"} |~ \"cache|getProduct|product|evict|reserve|confirm|release\"", "legendFormat": "" }
+          ],
+          "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "enableLogDetails": true },
+          "fieldConfig": { "defaults": {
+            "links": [
+              { "title": "Open in Explore (Loki)", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{namespace=\\\"retail-app\\\", container=\\\"inventory-service\\\"}\"}]}", "targetBlank": true },
+              { "title": "Open in Explore (Jaeger)", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"inventory-service\"}]}", "targetBlank": true }
+            ]
+          } }
+        },
+        {
+          "id": 9,
+          "title": "Cache metrics (raw) – link to traces & logs",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+          "description": "Total cache gets by result. Use Exemplars (if enabled) or time range + Explore to correlate with traces and logs.",
+          "targets": [
+            { "expr": "sum(increase(cache_gets_total{app=~\"${service}\", cache=~\"${cache}\"}[5m])) by (result)", "legendFormat": "{{result}}" }
+          ],
+          "fieldConfig": { "defaults": {
+            "links": [
+              { "title": "Prometheus: cache_gets_total", "url": "/explore?orgId=1&left={\"datasource\":\"prometheus\",\"queries\":[{\"expr\":\"cache_gets_total{app=\\\"inventory-service\\\"}\"}]}", "targetBlank": true },
+              { "title": "Loki: inventory-service logs", "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"expr\":\"{namespace=\\\"retail-app\\\", container=\\\"inventory-service\\\"}\"}]}", "targetBlank": true },
+              { "title": "Jaeger: inventory-service traces", "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"queryType\":\"search\",\"service\":\"inventory-service\"}]}", "targetBlank": true }
+            ]
+          } }
+        }
       ]
     }
 

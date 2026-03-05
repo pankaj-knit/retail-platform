@@ -75,6 +75,10 @@ spring:
           max-idle: 4
           min-idle: 1
 
+cache:
+  product:
+    schema-version: 1
+
 server:
   port: 8080
   shutdown: graceful

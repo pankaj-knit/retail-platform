@@ -71,7 +71,9 @@ data:
       # Buffers complete traces and decides what to keep:
       #   Policy 1: Keep 100% of traces with ERROR status
       #   Policy 2: Keep 100% of order-service traces
-      #   Policy 3: Keep 10% of everything else
+      #   Policy 3: Keep 100% of inventory-service (cache path: frontend → inv → L2 → DB)
+      #   Policy 4: Keep 100% of frontend (so full trace frontend → inventory-service is visible)
+      #   Policy 5: Keep 10% of everything else
       # A trace is kept if ANY policy says "sample".
       tail_sampling:
         decision_wait: 10s
@@ -86,6 +88,16 @@ data:
             string_attribute:
               key: service.name
               values: [order-service]
+          - name: keep-inventory-service
+            type: string_attribute
+            string_attribute:
+              key: service.name
+              values: [inventory-service]
+          - name: keep-frontend
+            type: string_attribute
+            string_attribute:
+              key: service.name
+              values: [frontend]
           - name: sample-rest
             type: probabilistic
             probabilistic:

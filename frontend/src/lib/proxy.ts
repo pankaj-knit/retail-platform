@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
+ * Injects current OpenTelemetry span context into headers when running in Node (API route).
+ * Used as fallback when the client did not send traceparent so backend still joins one trace.
+ */
+function injectTraceContext(headers: Record<string, string>): void {
+  try {
+    const { propagation, context } = require("@opentelemetry/api") as {
+      propagation: { inject: (ctx: unknown, carrier: Record<string, string>, setter?: unknown) => void };
+      context: { active: () => unknown };
+    };
+    if (propagation?.inject && context?.active) {
+      propagation.inject(context.active(), headers);
+    }
+  } catch {
+    // OpenTelemetry not available or not configured (e.g. client bundle)
+  }
+}
+
+/**
  * Generic BFF proxy: forwards the request to a backend microservice.
  * Strips the /api/<prefix> from the path and rewrites to the backend URL.
  * Passes the Authorization header through if present.
+ * Propagates W3C trace context (traceparent/tracestate) so backend spans attach to the same trace.
  */
 export async function proxyRequest(
   req: NextRequest,
@@ -27,6 +46,17 @@ export async function proxyRequest(
   const token = req.headers.get("x-auth-token");
   if (token && !authHeader) {
     headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  // Propagate W3C trace context so backend spans attach to the same trace (frontend → inventory-service → L2 → DB).
+  const traceparent = req.headers.get("traceparent");
+  if (traceparent) {
+    headers["traceparent"] = traceparent;
+    const tracestate = req.headers.get("tracestate");
+    if (tracestate) headers["tracestate"] = tracestate;
+  } else {
+    // Client may not have sent traceparent (e.g. Faro not ready). Use current server span so backend still joins a trace.
+    injectTraceContext(headers);
   }
 
   const init: RequestInit = {

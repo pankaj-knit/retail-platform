@@ -5,6 +5,7 @@ A full-stack, Amazon-inspired e-commerce platform built from scratch as a hands-
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          localhost:30080 (Browser)                          │
+│                          [Faro Web SDK (RUM)]                               │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │
 ┌────────────────────────────────▼────────────────────────────────────────────┐
@@ -17,8 +18,8 @@ A full-stack, Amazon-inspired e-commerce platform built from scratch as a hands-
 │                                                                             │
 │  ┌──────────┐    REST    ┌──────────────┐   gRPC   ┌───────────────────┐   │
 │  │ Frontend │───────────▶│ User Service │          │ Inventory Service │   │
-│  │ Next.js  │    REST    │  (sign JWT)  │          │  (gRPC + REST)    │   │
-│  │          │───────────▶├──────────────┤◀─────────┤                   │   │
+│  │ Next.js  │    REST    │  (sign JWT)  │          │  [L1 Caffeine]    │   │
+│  │ (Proxy)  │───────────▶├──────────────┤◀─────────┤                   │   │
 │  │          │    REST    │Order Service │          └───────────────────┘   │
 │  │          │───────────▶│ (orchestrator)│                                  │
 │  │          │    REST    ├──────────────┤                                   │
@@ -43,13 +44,14 @@ A full-stack, Amazon-inspired e-commerce platform built from scratch as a hands-
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      retail-observe namespace                               │
 │                                                                             │
-│  ┌───────────┐  ┌────────┐  ┌────────────┐  ┌──────────────┐  ┌─────────┐ │
-│  │ OTel      │  │ Jaeger │  │ Prometheus │  │ Loki+Promtail│  │ Grafana │ │
-│  │ Collector │─▶│ :30086 │  │ :30090     │  │              │  │ :30030  │ │
-│  └───────────┘  └────────┘  └────────────┘  └──────────────┘  └─────────┘ │
-│  ┌──────────────────┐  ┌──────────────┐                                    │
-│  │ kube-state-metrics│  │ node-exporter│  K8s object + host-level metrics  │
-│  └──────────────────┘  └──────────────┘                                    │
+│  ┌───────┐  ┌───────────┐  ┌────────┐  ┌────────────┐  ┌──────────────┐     │
+│  │ Alloy │─▶│ OTel      │─▶│ Jaeger │  │ Prometheus │  │ Loki+Promtail│     │
+│  │(Faro) │  │ Collector │  │ :30086 │  │ :30090     │  │              │     │
+│  └───────┘  └───────────┘  └────────┘  └────────────┘  └──────────────┘     │
+│             ┌──────────────────┐  ┌──────────────┐  ┌─────────┐             │
+│             │ kube-state-metrics│  │ node-exporter│  │ Grafana │             │
+│             └──────────────────┘  └──────────────┘  │ :30030  │             │
+│                                                     └─────────┘             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -74,6 +76,7 @@ A full-stack, Amazon-inspired e-commerce platform built from scratch as a hands-
   - [JWT Token Structure](#jwt-token-structure)
   - [JWT Authentication Flow](#jwt-authentication-flow)
   - [Vault Integration](#vault-integration)
+- [Tiered Caching Strategy](#tiered-caching-strategy)
 - [Inter-Service Communication](#inter-service-communication)
 - [Kafka Event System](#kafka-event-system)
   - [Kafka Broker Listeners](#kafka-broker-listeners)
@@ -156,11 +159,13 @@ Step 9: Deploy observability stack (12 dashboards + alerting)
 | **Service Mesh** | Istio (Envoy proxy) | 1.20+ |
 | **Secrets** | HashiCorp Vault OSS | 1.17 |
 | **Container Orchestration** | Kubernetes (kind) | 1.28+ |
-| **Caching (L1)** | Caffeine (in-process, 5s TTL) | — |
+| **Caching (L1)** | Caffeine (in-process, 5s TTL + jitter) | — |
 | **Caching (L2)** | Dragonfly (Redis-compatible, shared across pods) | latest |
 | **Tracing** | OpenTelemetry + Jaeger | — |
 | **Metrics** | Prometheus + Grafana + kube-state-metrics + node-exporter | — |
-| **Logging** | Loki + Promtail | — |
+| **Logging** | Loki | — |
+| **RUM (Frontend)** | Grafana Faro Web SDK + Grafana Alloy | 1.5.1 |
+| **Synthetic Tests** | Blackbox Exporter + K8s CronJobs | — |
 | **Alerting** | Grafana Unified Alerting (Teams + Email via Vault) | — |
 | **Auth** | JWT (RS256 asymmetric) | — |
 | **gRPC** | Spring gRPC + protobuf | 1.0.2 |
@@ -673,6 +678,18 @@ Main container reads secrets from /vault/secrets/
 
 ---
 
+## Tiered Caching Strategy
+
+To reduce database load and eliminate network latency for hot paths (like product lookups), the platform implements a two-tier caching architecture in the Inventory Service:
+
+- **L1 Cache (Caffeine):** In-memory cache local to each pod. Provides sub-millisecond lookups. Uses a 5-second base TTL with a random 0-2 second **jitter** to spread out expirations and prevent cache stampedes.
+- **L2 Cache (Dragonfly):** A distributed Redis-compatible cache shared across all pods with a 5-minute TTL. If an L1 miss occurs, the pod checks L2. If found, the data is promoted to L1. Misses on L2 hit the database and populate both L1 and L2.
+- **CacheWarmer:** On application startup, a `CacheWarmer` job queries an in-memory `ProductAccessTracker` (a sliding window of the hottest products over the last 6 hours) and pre-loads them into both L1 and L2 caches, preventing "cold start" database spikes.
+
+*Observability:* Cache hits (L1 vs L2), misses, and evictions are exported as custom Prometheus metrics (`cache_gets_total`) and tracked in a dedicated Grafana dashboard.
+
+---
+
 ## Inter-Service Communication
 
 | Path | Protocol | Why |
@@ -838,31 +855,39 @@ Istio Ingress Gateway (NodePort 30080)
 
 ## Observability Stack
 
-### Telemetry Pipeline
+### Telemetry Pipeline & RUM (Real User Monitoring)
 
+The platform implements End-to-End Tracing from the browser all the way to the database. The Next.js BFF proxy automatically injects W3C `traceparent` and `tracestate` headers so backend spans are seamlessly attached to frontend user sessions.
+
+```text
+Browser (Faro Web SDK)             Spring Boot apps               Istio Envoy sidecars
+    │ (Web Vitals/Logs)                │ (OTLP traces + metrics)      │ (access logs)
+    ▼                                  │                              ▼
+┌──────────────┐                       │                       ┌──────────────────┐
+│ Grafana Alloy│──(traces)─────────────┤                       │    Promtail      │
+│  (receiver)  │                       ▼                       │  (log shipper)   │
+└──────┬───────┘               ┌──────────────────┐            └────────┬─────────┘
+       │                       │  OTel Collector  │                     │
+       │ (logs)                │  (traces+metrics)│                     │
+       │                       └────────┬─────────┘                     │
+       │                                │                               │
+       │                           ┌────┴────┐                          │
+       ▼                           ▼         ▼                          ▼
+┌──────────┐                   ┌────────┐ ┌────────────┐         ┌──────────┐
+│   Loki   │◀──────────────────│ Jaeger │ │ Prometheus │         │   Loki   │
+│  (logs)  │                   │(traces)│ │ (metrics)  │         │  (logs)  │
+└────┬─────┘                   └────┬───┘ └─────┬──────┘         └────┬─────┘
+     │                              │           │                     │
+     └──────────────────────────────┴───────────┴─────────────────────┘
+                                    ▼
+                             ┌──────────────┐
+                             │   Grafana    │
+                             │ (dashboards) │
+                             └──────────────┘
 ```
-Spring Boot apps                    Istio Envoy sidecars
-    │ (OTLP traces + metrics)           │ (access logs)
-    ▼                                    ▼
-┌──────────────────┐            ┌──────────────────┐
-│  OTel Collector  │            │    Promtail      │
-│  (traces+metrics)│            │  (log shipper)   │
-└────────┬─────────┘            └────────┬─────────┘
-         │                               │
-    ┌────┴────┐                          │
-    ▼         ▼                          ▼
-┌────────┐ ┌────────────┐         ┌──────────┐
-│ Jaeger │ │ Prometheus │         │   Loki   │
-│(traces)│ │ (metrics)  │         │  (logs)  │
-└────┬───┘ └─────┬──────┘         └────┬─────┘
-     │           │                     │
-     └───────────┼─────────────────────┘
-                 ▼
-          ┌──────────────┐
-          │   Grafana    │
-          │ (dashboards) │
-          └──────────────┘
-```
+
+#### Synthetic Testing
+A **Blackbox Exporter** runs active synthetic tests (HTTP probes) against the Istio Ingress Gateway every minute via Kubernetes CronJobs. This simulates user traffic and measures external availability and latency, independent of actual user traffic.
 
 ### OTel Collector Internal Pipeline
 
@@ -888,29 +913,49 @@ The OpenTelemetry Collector receives, processes, and exports telemetry data:
    └──────────────────────────┘
 ```
 
-### Structured Logging Pipeline
+### Adaptive Trace Sampling
 
-Application logs flow through an async pipeline to avoid impacting request latency:
+To manage storage costs while preserving observability for critical paths and failures, the OTel Collector implements **tail-based sampling**. Instead of the applications deciding what to sample upfront (head sampling), the Collector buffers the entire trace, analyzes it, and applies the following policies. A trace is retained if it matches **any** of these criteria:
 
-```
-App thread: log.info("Stock reserved") → puts event in ring buffer → continues immediately
-BG thread:  reads from buffer → formats JSON → writes to stdout
+1. **Errors (100% Retention):** Any trace containing a span with a status code of `ERROR` is kept.
+2. **Order Flow (100% Retention):** Any trace touching the `order-service` is kept, ensuring complete visibility into the most critical business transaction (the Saga pattern).
+3. **Cache & UI Flows (100% Retention):** Traces touching `frontend` or `inventory-service` are kept. This ensures the full path from the browser (via Faro) through the Next.js proxy, into the inventory tiered cache (L1/L2), and down to the database is always visible for performance debugging.
+4. **Baseline (10% Retention):** For all other generic traffic (e.g., routine health checks, background jobs, or standard user/payment service calls without errors), the collector probabilistically keeps 10% of the traces.
+
+### Structured Logging Pipeline (OTLP)
+
+The platform has moved away from traditional sidecar/daemonset log scraping (like tailing stdout via Promtail) to **direct OTLP log emission**.
+
+All Spring Boot services use the `OpenTelemetryAppender` in `logback-spring.xml`. Application logs are sent asynchronously over OTLP directly to the OTel Collector. This eliminates disk I/O for logging and ensures perfect correlation since trace IDs and span IDs are automatically attached to the log records before emission.
+
+```text
+┌──────────────────────────────────────────────────┐
+│  App Pod (Spring Boot)                           │
+│  Log Event ──(attaches TraceID)──> OTel Appender │
+└────────────────────────┬─────────────────────────┘
+                         │ (OTLP gRPC/HTTP)
+                         ▼
+┌──────────────────────────────────────────────────┐
+│               OTel Collector                     │
+│                                                  │
+│  [Log Processors]                                │
+│   ├─ Normalize severity (INFO, ERROR, etc.)      │
+│   ├─ Filter/Route: Keep 100% of ERROR logs       │
+│   └─ Probabilistic Sampler: Keep 10% of INFO/WARN│
+└────────────────────────┬─────────────────────────┘
+                         │
+                         ▼
+                  ┌────────────┐
+                  │    Loki    │
+                  └────────────┘
 ```
 
-Promtail (DaemonSet) tails container stdout and ships logs to Loki:
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  App Pod                                                             │
-│  App Thread ──(nanoseconds)──> Async Ring Buffer ──(BG thread)──>   │
-│                                                    Container stdout  │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼───────────────────────────────────┐
-│  Promtail Pod (DaemonSet, fully decoupled)                           │
-│  Tails container log files ──(batch push)──> Loki                    │
-└──────────────────────────────────────────────────────────────────────┘
-```
+#### Centralized Log Sampling
+Similar to traces, logs sent to the OTel Collector are filtered to reduce noise:
+- **Severity-based Routing:** Log severity is normalized across all languages.
+- **Errors (100% Retention):** Logs with severity `WARN`, `ERROR`, or `FATAL` bypass the sampler and are sent directly to Loki.
+- **Non-Errors (10% Retention):** `TRACE`, `DEBUG`, and `INFO` logs are routed through a probabilistic sampler that drops 90% of the events.
+*(Note: Frontend browser logs sent via Faro to Alloy bypass this sampling to preserve the statistical accuracy of Real User Monitoring metrics).*
 
 ### Pre-Provisioned Grafana Dashboards
 
@@ -919,17 +964,19 @@ All dashboards are provisioned as code in `k8s/observability/grafana.yaml` and d
 | # | Dashboard | Key Panels |
 |---|-----------|------------|
 | 1 | **Service Overview** | HTTP request rate, error rate, P99 latency, JVM heap, HikariCP connections, Kafka consumer lag, circuit breaker state |
-| 2 | **JVM Deep Dive** | Heap/non-heap memory, GC pause times, thread counts, class loading |
-| 3 | **Database & HikariCP** | Connection pool usage, active/idle/pending, acquisition time |
-| 4 | **Kafka Deep Dive** | Consumer lag per group, message rate, partition assignment, retry/DLT rates |
-| 5 | **Failed Events & Logs** | DLT log stream, DLT message rate per service, CRITICAL log events |
-| 6 | **Istio Service Mesh** | Request volume, success rate, P99 latency per service pair, mTLS status |
-| 7 | **System Resources** | CPU/memory per pod, resource requests vs limits |
-| 8 | **PostgreSQL Server** | Active connections, transaction rate, cache hit ratio, table sizes |
-| 9 | **Kubernetes Cluster** | Node CPU/memory, pod status, container restarts, OOM kills, HPA scaling, PVC usage, restart reasons table |
-| 10 | **Frontend Performance** | Request rate via Istio, response codes, Envoy-level latency |
-| 11 | **Dragonfly Cache** | Hit/miss ratio, connected clients, memory usage, evictions, command rate |
-| 12 | **Business KPIs** | Orders per minute, revenue, payment success rate, average order value |
+| 2 | **Frontend Web Vitals (RUM)** | Real user LCP, FCP, TTFB, CLS, INP, fetch latencies, browser exceptions via Faro |
+| 3 | **Cache Observability** | L1 vs L2 hit ratio, DB fallback rate, eviction rates, cache metrics correlated with logs |
+| 4 | **Synthetic Monitoring** | Blackbox exporter HTTP probe success rate, latency breakdown, SSL expiry |
+| 5 | **JVM Deep Dive** | Heap/non-heap memory, GC pause times, thread counts, class loading |
+| 6 | **Database & HikariCP** | Connection pool usage, active/idle/pending, acquisition time |
+| 7 | **Kafka Deep Dive** | Consumer lag per group, message rate, partition assignment, retry/DLT rates |
+| 8 | **Failed Events & Logs** | DLT log stream, DLT message rate per service, CRITICAL log events |
+| 9 | **Istio Service Mesh** | Request volume, success rate, P99 latency per service pair, mTLS status |
+| 10 | **System Resources** | CPU/memory per pod, resource requests vs limits |
+| 11 | **PostgreSQL Server** | Active connections, transaction rate, cache hit ratio, table sizes |
+| 12 | **Kubernetes Cluster** | Node CPU/memory, pod status, container restarts, OOM kills, HPA scaling, PVC usage |
+| 13 | **Dragonfly Cache** | Hit/miss ratio, connected clients, memory usage, evictions, command rate |
+| 14 | **Business KPIs** | Orders per minute, revenue, payment success rate, average order value |
 
 ### Alerting
 

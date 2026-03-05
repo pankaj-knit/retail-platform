@@ -75,6 +75,10 @@ spring:
           max-idle: 4
           min-idle: 1
 
+cache:
+  product:
+    schema-version: 1
+
 server:
   port: 8080
   shutdown: graceful
@@ -102,6 +106,10 @@ management:
       export:
         otlp:
           endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector.retail-observe.svc.cluster.local:4318}/v1/traces
+    logging:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector.retail-observe.svc.cluster.local:4318}/v1/logs
 
 vault:
   secrets-path: ${VAULT_SECRETS_PATH:config/jwt}
